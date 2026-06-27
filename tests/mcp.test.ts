@@ -1,0 +1,216 @@
+import assert from 'node:assert/strict';
+import test, { afterEach, beforeEach } from 'node:test';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { handleMcpRequest } from '../src/http';
+
+const originalFetch = globalThis.fetch;
+const originalEnv = { ...process.env };
+
+interface UpstreamCall {
+  url: string;
+  authorization: string | null;
+  body: string | null;
+}
+
+let upstreamCalls: UpstreamCall[] = [];
+let auditCalls: UpstreamCall[] = [];
+
+beforeEach(() => {
+  upstreamCalls = [];
+  auditCalls = [];
+  process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
+  process.env.MCP_ALLOWED_ORIGINS = 'https://codex.test';
+  process.env.AUTH0_MCP_AUDIENCE = 'https://silmaril.security/firewall-ui/mcp-test';
+  delete process.env.MCP_AUDIT_URL;
+});
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  process.env = { ...originalEnv };
+});
+
+function json(payload: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(payload), {
+    ...init,
+    headers: {
+      'content-type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+}
+
+function requestFrom(input: string | URL | Request, init?: RequestInit): Request {
+  return input instanceof Request ? input : new Request(input, init);
+}
+
+function installMockFetch() {
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const req = requestFrom(input, init);
+    const url = new URL(req.url);
+
+    if (url.hostname === 'mcp.test') {
+      return handleMcpRequest(req);
+    }
+
+    if (url.hostname === 'audit.test') {
+      auditCalls.push({
+        url: req.url,
+        authorization: req.headers.get('authorization'),
+        body: await req.text(),
+      });
+      return json({ ok: true });
+    }
+
+    if (url.hostname !== 'firewall.test') {
+      throw new Error(`unexpected fetch host ${url.hostname}`);
+    }
+
+    upstreamCalls.push({
+      url: req.url,
+      authorization: req.headers.get('authorization'),
+      body: await req.text(),
+    });
+
+    if (url.pathname === '/api/mcp/v1/firewalls') {
+      return json({
+        items: [{
+          firewall_id: 'yc-prod-us-west-2',
+          runtime: 'sagemaker',
+          capabilities: { trace: { state: 'available' } },
+          generated_at: '2026-06-27T00:00:00.000Z',
+        }],
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2') {
+      return json({
+        firewall_id: 'yc-prod-us-west-2',
+        runtime: 'sagemaker',
+        capabilities: { trace: { state: 'available' } },
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/qa-find-001') {
+      return json({
+        firewall: { firewall_id: 'yc-prod-us-west-2' },
+        finding: {
+          evidence_id: 'yc-prod-us-west-2:qa-find-001',
+          text: 'CANARY_SECRET_SHOULD_NOT_APPEAR_IN_LOGS',
+        },
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/forbidden-prod-us-west-2') {
+      return json({ error: { code: 'firewall_not_found', message: 'Firewall not found.' } }, { status: 404 });
+    }
+
+    return json({ error: { code: 'not_found', message: 'Unknown fixture path.' } }, { status: 404 });
+  }) as typeof fetch;
+}
+
+async function connectedClient() {
+  installMockFetch();
+  const client = new Client({ name: 'mcp-test-client', version: '0.1.0' });
+  const transport = new StreamableHTTPClientTransport(new URL('https://mcp.test/mcp'), {
+    requestInit: {
+      headers: {
+        authorization: 'Bearer user-access-token',
+        origin: 'https://codex.test',
+      },
+    },
+    fetch: globalThis.fetch,
+  });
+  await client.connect(transport);
+  return { client, transport };
+}
+
+test('initializes, lists tools, calls list_firewalls, and forwards bearer auth', async () => {
+  const { client } = await connectedClient();
+  const tools = await client.listTools();
+  assert.ok(tools.tools.some((tool) => tool.name === 'list_firewalls'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'get_investigation_packet'));
+
+  const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(result.isError, undefined);
+  assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
+  assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('rejects invalid Origin before MCP handling', async () => {
+  installMockFetch();
+  const response = await handleMcpRequest(new Request('https://mcp.test/mcp', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer user-access-token',
+      origin: 'https://evil.test',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  }));
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'origin_forbidden');
+});
+
+test('requires bearer auth on MCP requests', async () => {
+  const response = await handleMcpRequest(new Request('https://mcp.test/mcp', {
+    method: 'POST',
+    headers: {
+      origin: 'https://codex.test',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  }));
+
+  assert.equal(response.status, 401);
+  assert.equal((await response.json()).error.code, 'token_missing');
+});
+
+test('normalizes firewall-ui errors into MCP tool errors', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_firewall',
+    arguments: { firewall_id: 'forbidden-prod-us-west-2' },
+  });
+
+  assert.equal(result.isError, true);
+  const structured = result.structuredContent as { error: { status: number; code: string } };
+  assert.equal(structured.error.status, 404);
+  assert.equal(structured.error.code, 'firewall_not_found');
+});
+
+test('detail access audits metadata only and does not log payload text', async () => {
+  const logLines: string[] = [];
+  const originalConsole = {
+    log: console.log,
+    warn: console.warn,
+    error: console.error,
+  };
+  console.log = (...args: unknown[]) => { logLines.push(args.join(' ')); };
+  console.warn = (...args: unknown[]) => { logLines.push(args.join(' ')); };
+  console.error = (...args: unknown[]) => { logLines.push(args.join(' ')); };
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+
+  try {
+    const { client } = await connectedClient();
+    const result = await client.callTool({
+      name: 'get_finding',
+      arguments: {
+        firewall_id: 'yc-prod-us-west-2',
+        finding_id: 'qa-find-001',
+        reason: 'Investigating alert evidence citation.',
+      },
+    });
+
+    assert.equal(result.isError, undefined);
+    assert.equal(auditCalls.length, 1);
+    assert.match(auditCalls[0].body ?? '', /Investigating alert evidence citation/);
+    assert.doesNotMatch(auditCalls[0].body ?? '', /CANARY_SECRET/);
+    assert.equal(logLines.join('\n').includes('CANARY_SECRET'), false);
+  } finally {
+    console.log = originalConsole.log;
+    console.warn = originalConsole.warn;
+    console.error = originalConsole.error;
+  }
+});
