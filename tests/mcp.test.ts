@@ -3,6 +3,8 @@ import test, { afterEach, beforeEach } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { handleMcpRequest } from '../src/http';
+import { readConfig } from '../src/config';
+import { firewallGetJson, FirewallApiError } from '../src/firewall-ui-client';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
@@ -101,12 +103,25 @@ function installMockFetch() {
       });
     }
 
+    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/missing-finding') {
+      return json({ error: { code: 'finding_not_found', message: 'Finding not found.' } }, { status: 404 });
+    }
+
     if (url.pathname === '/api/mcp/v1/firewalls/forbidden-prod-us-west-2') {
       return json({ error: { code: 'firewall_not_found', message: 'Firewall not found.' } }, { status: 404 });
     }
 
     return json({ error: { code: 'not_found', message: 'Unknown fixture path.' } }, { status: 404 });
   }) as typeof fetch;
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(predicate(), true);
 }
 
 async function connectedClient() {
@@ -204,6 +219,7 @@ test('detail access audits metadata only and does not log payload text', async (
     });
 
     assert.equal(result.isError, undefined);
+    await waitFor(() => auditCalls.length === 1);
     assert.equal(auditCalls.length, 1);
     assert.match(auditCalls[0].body ?? '', /Investigating alert evidence citation/);
     assert.doesNotMatch(auditCalls[0].body ?? '', /CANARY_SECRET/);
@@ -213,4 +229,58 @@ test('detail access audits metadata only and does not log payload text', async (
     console.warn = originalConsole.warn;
     console.error = originalConsole.error;
   }
+});
+
+test('failed detail reads are not recorded as successful audit events', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_finding',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      finding_id: 'missing-finding',
+      reason: 'Investigating a stale finding handle.',
+    },
+  });
+
+  assert.equal(result.isError, true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(auditCalls.length, 0);
+});
+
+test('response cap is clamped to the hard ceiling', () => {
+  process.env.MCP_MAX_RESPONSE_BYTES = '999999999999';
+  assert.equal(readConfig().maxResponseBytes, 5_000_000);
+});
+
+test('chunked upstream responses are rejected as soon as they exceed the size cap', async () => {
+  globalThis.fetch = (async () =>
+    new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"value":"'));
+        controller.enqueue(new TextEncoder().encode('x'.repeat(32)));
+        controller.enqueue(new TextEncoder().encode('"}'));
+        controller.close();
+      },
+    }), {
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+
+  await assert.rejects(
+    () => firewallGetJson({
+      path: '/api/mcp/v1/firewalls',
+      token: 'user-access-token',
+      config: {
+        firewallUiBaseUrl: 'https://firewall.test',
+        allowedOrigins: [],
+        maxResponseBytes: 16,
+        mcpAudience: null,
+        auditUrl: null,
+      },
+    }),
+    (err) =>
+      err instanceof FirewallApiError &&
+      err.status === 413 &&
+      err.code === 'upstream_response_too_large',
+  );
 });

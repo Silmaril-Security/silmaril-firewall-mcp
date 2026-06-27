@@ -8,6 +8,21 @@ export interface DetailAuditEvent {
   requestId: string | number;
 }
 
+const AUDIT_TIMEOUT_MS = 1_500;
+
+function timeoutSignal(parent?: AbortSignal): AbortSignal {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUDIT_TIMEOUT_MS);
+  const abort = () => {
+    clearTimeout(timeout);
+    controller.abort();
+  };
+  if (parent?.aborted) abort();
+  else parent?.addEventListener('abort', abort, { once: true });
+  controller.signal.addEventListener('abort', () => clearTimeout(timeout), { once: true });
+  return controller.signal;
+}
+
 export async function auditDetailAccess(event: DetailAuditEvent, config: ServerConfig, signal?: AbortSignal) {
   if (!config.auditUrl) return;
 
@@ -18,6 +33,6 @@ export async function auditDetailAccess(event: DetailAuditEvent, config: ServerC
       ...event,
       at: new Date().toISOString(),
     }),
-    signal,
+    signal: timeoutSignal(signal),
   }).catch(() => undefined);
 }

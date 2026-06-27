@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
-import * as z from 'zod/v4';
+import { z } from 'zod';
 import { auditDetailAccess } from './audit';
 import { enc, firewallGetJson, pathWithQuery, FirewallApiError } from './firewall-ui-client';
 import type { ServerConfig } from './config';
@@ -80,6 +80,7 @@ async function callFirewall<T>(
   path: string,
   extra: Extra,
   config: ServerConfig,
+  onSuccess?: () => void,
 ) {
   try {
     const payload = await firewallGetJson<T>({
@@ -88,6 +89,7 @@ async function callFirewall<T>(
       config,
       signal: extra.signal,
     });
+    onSuccess?.();
     return mcpResult(toolName, payload);
   } catch (err) {
     return mcpErrorResult(err);
@@ -212,10 +214,11 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     },
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, finding_id, reason }, extra) => {
-    await auditDetailAccess({ tool: 'get_finding', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
     return callFirewall('get_finding', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}`, {
       reason,
-    }), extra, config);
+    }), extra, config, () => {
+      void auditDetailAccess({ tool: 'get_finding', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
+    });
   });
 
   server.registerTool('get_finding_trace', {
@@ -228,10 +231,11 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     },
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, finding_id, reason }, extra) => {
-    await auditDetailAccess({ tool: 'get_finding_trace', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
     return callFirewall('get_finding_trace', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/trace`, {
       reason,
-    }), extra, config);
+    }), extra, config, () => {
+      void auditDetailAccess({ tool: 'get_finding_trace', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
+    });
   });
 
   return server;

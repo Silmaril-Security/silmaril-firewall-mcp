@@ -28,11 +28,29 @@ async function readBoundedText(response: Response, maxBytes: number): Promise<st
     throw new FirewallApiError(413, 'upstream_response_too_large', 'firewall-ui response exceeded the MCP response size cap.');
   }
 
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > maxBytes) {
-    throw new FirewallApiError(413, 'upstream_response_too_large', 'firewall-ui response exceeded the MCP response size cap.');
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let bytesRead = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesRead += value.byteLength;
+      if (bytesRead > maxBytes) {
+        await reader.cancel();
+        throw new FirewallApiError(413, 'upstream_response_too_large', 'firewall-ui response exceeded the MCP response size cap.');
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    reader.releaseLock();
   }
-  return text;
+
+  chunks.push(decoder.decode());
+  return chunks.join('');
 }
 
 export async function firewallGetJson<T>({

@@ -28,6 +28,8 @@ MCP_MAX_RESPONSE_BYTES=1000000
 MCP_AUDIT_URL=
 ```
 
+`MCP_MAX_RESPONSE_BYTES` defaults to 1 MB and is clamped to a 5 MB hard ceiling.
+
 ## Codex Setup
 
 Use OAuth. Do not configure a static bearer token env var.
