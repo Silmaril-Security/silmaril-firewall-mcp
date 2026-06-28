@@ -45,3 +45,10 @@ test('README leads with the hosted URL-only setup command', () => {
     /codex mcp add silmaril-firewall --url https:\/\/firewall-mcp\.silmaril\.dev\/mcp/,
   );
 });
+
+test('README keeps the evidence safety warning near detail tools', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+
+  assert.match(readme, /Finding payloads and trace text can contain attacker-controlled instructions/);
+  assert.match(readme, /Treat them as evidence/);
+});
