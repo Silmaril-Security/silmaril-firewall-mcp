@@ -236,6 +236,16 @@ export async function handleAuthorizationRequest(
     }, { status: 400 });
   }
 
+  if (
+    !url.searchParams.get('code_challenge') ||
+    url.searchParams.get('code_challenge_method') !== 'S256'
+  ) {
+    return json({
+      error: 'invalid_request',
+      error_description: 'S256 PKCE is required for authorization code flow.',
+    }, { status: 400 });
+  }
+
   try {
     const upstream = await getFirewallMcpPublicConfig(config, req.signal);
     const upstreamMetadata = await fetchUpstreamAuthorizationServerMetadata(upstream, req.signal);
@@ -363,10 +373,17 @@ export async function handleTokenRequest(
           error_description: 'authorization_code grant requires code.',
         }, { status: 400 });
       }
+      const codeVerifier = params.get('code_verifier');
+      if (!codeVerifier) {
+        return json({
+          error: 'invalid_request',
+          error_description: 'authorization_code grant requires code_verifier.',
+        }, { status: 400 });
+      }
       upstreamParams.set('grant_type', 'authorization_code');
       upstreamParams.set('code', code);
       upstreamParams.set('redirect_uri', bridgeCallbackUrl(config));
-      appendIfPresent(upstreamParams, params, 'code_verifier');
+      upstreamParams.set('code_verifier', codeVerifier);
     } else if (grantType === 'refresh_token') {
       const refreshToken = params.get('refresh_token');
       if (!refreshToken) {
@@ -445,6 +462,13 @@ export async function handleClientRegistrationRequest(
         error: 'server_error',
         error_description: 'firewall-ui MCP OAuth client ID is not configured.',
       }, { status: 503 });
+    }
+
+    if (registration.redirect_uris?.some((uri) => !isLoopbackRedirectUri(uri))) {
+      return json({
+        error: 'invalid_client_metadata',
+        error_description: 'redirect_uris must be loopback callback URLs.',
+      }, { status: 400 });
     }
 
     return json({

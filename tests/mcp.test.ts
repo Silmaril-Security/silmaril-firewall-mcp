@@ -372,6 +372,8 @@ test('authorization bridge preserves explicit client organization over default',
       redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
       state: 'codex-state',
       organization: 'org_explicit',
+      code_challenge: 'pkce-challenge',
+      code_challenge_method: 'S256',
     }).toString()),
     readConfig(),
   );
@@ -395,6 +397,34 @@ test('authorization bridge rejects non-loopback client callbacks', async () => {
 
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error, 'invalid_request');
+});
+
+test('authorization bridge requires S256 PKCE', async () => {
+  installMockFetch();
+
+  const missingChallenge = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+    }).toString()),
+    readConfig(),
+  );
+  const plainChallenge = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+      code_challenge: 'pkce-challenge',
+      code_challenge_method: 'plain',
+    }).toString()),
+    readConfig(),
+  );
+
+  assert.equal(missingChallenge.status, 400);
+  assert.equal((await missingChallenge.json()).error_description, 'S256 PKCE is required for authorization code flow.');
+  assert.equal(plainChallenge.status, 400);
+  assert.equal((await plainChallenge.json()).error_description, 'S256 PKCE is required for authorization code flow.');
 });
 
 test('token bridge exchanges authorization code with fixed MCP callback and PKCE verifier', async () => {
@@ -428,6 +458,28 @@ test('token bridge exchanges authorization code with fixed MCP callback and PKCE
   assert.equal(upstreamBody.get('code_verifier'), 'codex-pkce-verifier');
 });
 
+test('token bridge rejects authorization code exchange without PKCE verifier', async () => {
+  installMockFetch();
+
+  const response = await handleTokenRequest(
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: 'public-mcp-client-id',
+        code: 'auth0-code',
+        redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+      }).toString(),
+    }),
+    readConfig(),
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error_description, 'authorization_code grant requires code_verifier.');
+  assert.equal(tokenCalls.length, 0);
+});
+
 test('dynamic client registration returns configured public OAuth client', async () => {
   installMockFetch();
 
@@ -455,6 +507,28 @@ test('dynamic client registration returns configured public OAuth client', async
   assert.equal(body.token_endpoint_auth_method, 'none');
   assert.equal(body.scope, 'firewalls:read metrics:read');
   assert.equal(body.client_name, 'Codex');
+});
+
+test('dynamic client registration rejects callbacks authorize would reject', async () => {
+  installMockFetch();
+
+  const response = await handleClientRegistrationRequest(
+    new Request('https://mcp.test/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: ['https://client.example/callback'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+      }),
+    }),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, 'invalid_client_metadata');
+  assert.equal(body.error_description, 'redirect_uris must be loopback callback URLs.');
 });
 
 test('OAuth metadata ignores request-controlled forwarded host headers', async () => {
