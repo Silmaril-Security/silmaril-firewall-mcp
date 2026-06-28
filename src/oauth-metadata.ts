@@ -15,16 +15,8 @@ function json(payload: unknown, init?: ResponseInit): Response {
   });
 }
 
-function forwardedBaseUrl(req: Request): string {
-  const url = new URL(req.url);
-  const forwardedHost = req.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
-  if (!forwardedHost) return url.origin;
-  const forwardedProto = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
-  return `${forwardedProto || url.protocol.replace(/:$/, '')}://${forwardedHost}`;
-}
-
 export function publicBaseUrl(req: Request, config: ServerConfig): string {
-  return config.publicBaseUrl ?? forwardedBaseUrl(req);
+  return config.publicBaseUrl ?? new URL(req.url).origin;
 }
 
 export function protectedResourceMetadataUrl(req: Request, config: ServerConfig): string {

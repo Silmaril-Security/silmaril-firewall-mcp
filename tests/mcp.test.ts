@@ -22,10 +22,12 @@ interface UpstreamCall {
 
 let upstreamCalls: UpstreamCall[] = [];
 let auditCalls: UpstreamCall[] = [];
+let publicConfigOverride: Record<string, unknown> = {};
 
 beforeEach(() => {
   upstreamCalls = [];
   auditCalls = [];
+  publicConfigOverride = {};
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
   process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS = 'https://codex.test';
   delete process.env.MCP_ALLOWED_ORIGINS;
@@ -102,6 +104,7 @@ function installMockFetch() {
           client_id: 'public-mcp-client-id',
           client_id_source: 'AUTH0_MCP_CLIENT_ID',
         },
+        ...publicConfigOverride,
       });
     }
 
@@ -235,6 +238,25 @@ test('serves OAuth protected resource metadata from firewall-ui public config', 
   assert.ok(body.scopes_supported.includes('trace:read'));
 });
 
+test('OAuth metadata ignores request-controlled forwarded host headers', async () => {
+  installMockFetch();
+
+  const response = await handleProtectedResourceMetadataRequest(
+    new Request('https://mcp.test/.well-known/oauth-protected-resource/mcp', {
+      headers: {
+        'x-forwarded-host': 'attacker.example',
+        'x-forwarded-proto': 'https',
+      },
+    }),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.resource, 'https://mcp.test/mcp');
+  assert.equal(body.resource.includes('attacker.example'), false);
+});
+
 test('caches firewall-ui public OAuth config briefly', async () => {
   installMockFetch();
   const config = readConfig();
@@ -247,6 +269,34 @@ test('caches firewall-ui public OAuth config briefly', async () => {
     new URL(call.url).pathname === '/api/mcp/v1/config');
   assert.equal(configCalls.length, 1);
   assert.equal(configCalls[0].authorization, null);
+});
+
+test('rejects disabled firewall-ui public OAuth config without caching it', async () => {
+  installMockFetch();
+  publicConfigOverride = { enabled: false };
+  const config = readConfig();
+
+  await assert.rejects(
+    () => getFirewallMcpPublicConfig(config),
+    /firewall-ui MCP API is disabled/,
+  );
+
+  publicConfigOverride = {};
+  const recovered = await getFirewallMcpPublicConfig(config);
+  assert.equal(recovered.enabled, true);
+});
+
+test('uses audience as resource for older firewall-ui public config responses', async () => {
+  installMockFetch();
+  publicConfigOverride = {
+    resource: undefined,
+    audience: 'https://silmaril.security/firewall-ui/mcp-legacy',
+  };
+
+  const config = await getFirewallMcpPublicConfig(readConfig());
+
+  assert.equal(config.audience, 'https://silmaril.security/firewall-ui/mcp-legacy');
+  assert.equal(config.resource, 'https://silmaril.security/firewall-ui/mcp-legacy');
 });
 
 test('normalizes firewall-ui errors into MCP tool errors', async () => {
