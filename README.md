@@ -15,9 +15,9 @@ When the client connects, hosted OAuth discovery opens Silmaril login. Tenant ac
 - `list_firewalls` - list the Firewall deployments you can access.
 - `get_firewall` - inspect runtime state, source, freshness, and capabilities for one deployment.
 - `get_metrics` - read bounded invocation, error, and latency metrics.
-- `list_findings` - search findings with compact previews and pagination.
-- `get_finding_totals` - summarize finding totals for a bounded time window.
-- `group_findings` - aggregate findings by hook, tool, or class.
+- `list_findings` - search findings with compact previews, triage filters, and pagination.
+- `get_finding_totals` - summarize finding totals for a bounded time window. Use `triage=false_positive` for exact false-positive counts.
+- `group_findings` - aggregate findings by hook, tool, class, or triage verdict.
 - `get_investigation_packet` - gather a compact evidence packet for one finding.
 - `get_finding` - retrieve a full finding evidence bundle when detail is needed.
 - `get_finding_trace` - retrieve the available trace evidence for one finding.
