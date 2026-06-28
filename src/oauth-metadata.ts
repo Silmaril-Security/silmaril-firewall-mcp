@@ -39,10 +39,11 @@ export async function handleProtectedResourceMetadataRequest(
   try {
     const upstream = await getFirewallMcpPublicConfig(config);
     const mcpResource = new URL('/mcp', publicBaseUrl(config)).toString();
+    const issuer = publicBaseUrl(config);
 
     return json({
       resource: mcpResource,
-      authorization_servers: upstream.authorization_servers,
+      authorization_servers: [issuer],
       scopes_supported: upstream.scopes,
       bearer_methods_supported: ['header'],
       resource_name: 'Silmaril Firewall Evidence MCP',
@@ -50,6 +51,7 @@ export async function handleProtectedResourceMetadataRequest(
       silmaril_firewall_ui_config: new URL('/api/mcp/v1/config', `${config.firewallUiBaseUrl}/`).toString(),
       silmaril_oauth_resource: upstream.resource || upstream.audience,
       silmaril_oauth_client_id: upstream.oauth?.client_id ?? undefined,
+      silmaril_upstream_authorization_servers: upstream.authorization_servers,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'MCP OAuth metadata is unavailable.';
