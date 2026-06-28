@@ -93,8 +93,16 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
 
   const token = bearerToken(req);
   if (!token) {
+    let challenge: string;
+    try {
+      challenge = wwwAuthenticateHeader(req, config);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'MCP OAuth metadata is unavailable.';
+      return json(503, 'mcp_oauth_metadata_unavailable', message, origin.origin);
+    }
+
     return json(401, 'token_missing', 'Missing bearer token.', origin.origin, {
-      'www-authenticate': wwwAuthenticateHeader(req, config),
+      'www-authenticate': challenge,
     });
   }
 

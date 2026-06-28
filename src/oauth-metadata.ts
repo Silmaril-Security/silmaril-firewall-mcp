@@ -16,7 +16,14 @@ function json(payload: unknown, init?: ResponseInit): Response {
 }
 
 export function publicBaseUrl(req: Request, config: ServerConfig): string {
-  return config.publicBaseUrl ?? new URL(req.url).origin;
+  if (config.publicBaseUrl) return config.publicBaseUrl;
+
+  const url = new URL(req.url);
+  if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]') {
+    return url.origin;
+  }
+
+  throw new Error('MCP_PUBLIC_BASE_URL is required for OAuth discovery outside localhost.');
 }
 
 export function protectedResourceMetadataUrl(req: Request, config: ServerConfig): string {

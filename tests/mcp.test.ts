@@ -29,7 +29,7 @@ beforeEach(() => {
   process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS = 'https://codex.test';
   delete process.env.MCP_ALLOWED_ORIGINS;
   delete process.env.AUTH0_MCP_AUDIENCE;
-  delete process.env.MCP_PUBLIC_BASE_URL;
+  process.env.MCP_PUBLIC_BASE_URL = 'https://mcp.test';
   delete process.env.MCP_AUDIT_URL;
 });
 
@@ -214,6 +214,23 @@ test('requires bearer auth on MCP requests', async () => {
   assert.match(challenge, /^Bearer /);
   assert.match(challenge, /resource_metadata="https:\/\/mcp\.test\/\.well-known\/oauth-protected-resource\/mcp"/);
   assert.match(challenge, /scope="firewalls:read metrics:read findings:read"/);
+});
+
+test('rejects non-local OAuth discovery without a configured public base URL', async () => {
+  delete process.env.MCP_PUBLIC_BASE_URL;
+
+  const response = await handleMcpRequest(new Request('https://attacker.example/mcp', {
+    method: 'POST',
+    headers: {
+      origin: 'https://codex.test',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  }));
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'mcp_oauth_metadata_unavailable');
+  assert.equal(response.headers.get('www-authenticate'), null);
 });
 
 test('serves OAuth protected resource metadata from firewall-ui public config', async () => {
