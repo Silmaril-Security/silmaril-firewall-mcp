@@ -9,9 +9,22 @@ import type { ServerConfig } from './config';
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 const RangeSchema = z.enum(['5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '3d', '1w', '30d']);
-const GroupBySchema = z.enum(['hook', 'tool', 'class']);
+const TriageFilterSchema = z.enum(['true_positive', 'false_positive', 'triaged', 'untriaged']);
+const GroupBySchema = z.enum(['hook', 'tool', 'class', 'triage']);
 const FirewalledIdSchema = z.string().min(1).max(256);
 const ReasonSchema = z.string().min(8).max(512);
+type TriageFilter = z.infer<typeof TriageFilterSchema>;
+
+interface FindingTotalsPayload {
+  blocked?: number | null;
+  blockedMetricReady?: boolean | null;
+  total?: number | null;
+  totals?: {
+    blocked?: number | null;
+    blockedMetricReady?: boolean | null;
+    total?: number | null;
+  };
+}
 
 const windowShape = {
   range: RangeSchema.optional().describe('Preset bounded time range. Defaults to 1d in firewall-ui.'),
@@ -26,10 +39,42 @@ const readOnlyAnnotations = {
   openWorldHint: false,
 } as const;
 
+const triageShape = {
+  triage: TriageFilterSchema.optional().describe(
+    'Filter by triage verdict/status. Use false_positive for exact false-positive counts, true_positive for confirmed attacks, triaged for all reviewed findings, or untriaged.',
+  ),
+};
+
 function token(extra: Extra): string {
   const value = extra.authInfo?.token;
   if (!value) throw new Error('Missing authenticated bearer token.');
   return value;
+}
+
+function findingBlockedCount(payload: FindingTotalsPayload): number | null {
+  const value =
+    payload.totals?.blocked ??
+    payload.blocked ??
+    payload.totals?.total ??
+    payload.total;
+  return typeof value === 'number' ? value : null;
+}
+
+function findingBlockedMetricReady(payload: FindingTotalsPayload): boolean | null {
+  const value = payload.totals?.blockedMetricReady ?? payload.blockedMetricReady;
+  return typeof value === 'boolean' ? value : null;
+}
+
+function triagedCount(
+  items: Array<{ triage: TriageFilter; count: number | null }>,
+  exactCounts: boolean,
+): number | null {
+  if (!exactCounts) return null;
+  const triagedBucket = items.find((item) => item.triage === 'triaged');
+  if (triagedBucket) return triagedBucket.count ?? 0;
+  return items
+    .filter((item) => item.triage === 'true_positive' || item.triage === 'false_positive')
+    .reduce((sum, item) => sum + (item.count ?? 0), 0);
 }
 
 function mcpResult(toolName: string, payload: unknown) {
@@ -96,6 +141,56 @@ async function callFirewall<T>(
   }
 }
 
+async function callTriageFindingGroups(
+  firewallId: string,
+  args: {
+    triage?: TriageFilter;
+    range?: string;
+    startTime?: string;
+    endTime?: string;
+  },
+  extra: Extra,
+  config: ServerConfig,
+) {
+  const buckets: TriageFilter[] = args.triage
+    ? [args.triage]
+    : ['true_positive', 'false_positive', 'untriaged'];
+
+  try {
+    const bearer = token(extra);
+    const items = await Promise.all(buckets.map(async (triage) => {
+      const payload = await firewallGetJson<FindingTotalsPayload>({
+        path: pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewallId)}/findings/totals`, {
+          range: args.range,
+          startTime: args.startTime,
+          endTime: args.endTime,
+          triage,
+        }),
+        token: bearer,
+        config,
+        signal: extra.signal,
+      });
+      return {
+        key: triage,
+        triage,
+        count: findingBlockedCount(payload),
+        blockedMetricReady: findingBlockedMetricReady(payload),
+      };
+    }));
+
+    const exactCounts = items.every((item) => typeof item.count === 'number');
+    return mcpResult('group_findings', {
+      by: 'triage',
+      items,
+      exact_counts: exactCounts,
+      triaged_count: triagedCount(items, exactCounts),
+      source: 'findings_totals_by_triage',
+    });
+  } catch (err) {
+    return mcpErrorResult(err);
+  }
+}
+
 export function createFirewallMcpServer(config: ServerConfig): McpServer {
   const server = new McpServer({
     name: 'silmaril-firewall-mcp',
@@ -144,13 +239,14 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
 
   server.registerTool('list_findings', {
     title: 'List Findings',
-    description: 'Search authorized findings with compact previews and pagination. Does not return full payload text.',
+    description: 'Search authorized findings with compact previews, triage filters, and pagination. Does not return full payload text.',
     inputSchema: {
       firewall_id: FirewalledIdSchema,
       q: z.string().max(512).optional(),
       minScore: z.number().min(0).max(1).optional(),
       hook: z.string().max(128).optional(),
       toolName: z.string().max(256).optional(),
+      ...triageShape,
       sort: z.enum(['time', 'score', 'triage', 'severity']).optional(),
       dir: z.enum(['asc', 'desc']).optional(),
       cursor: z.string().max(1024).optional(),
@@ -163,35 +259,43 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
 
   server.registerTool('get_finding_totals', {
     title: 'Get Finding Totals',
-    description: 'Read bounded finding totals for one authorized firewall.',
+    description: 'Read bounded finding totals for one authorized firewall. Use triage=false_positive for an exact false-positive count.',
     inputSchema: {
       firewall_id: FirewalledIdSchema,
+      ...triageShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, range, startTime, endTime }, extra) =>
+  }, async ({ firewall_id, triage, range, startTime, endTime }, extra) =>
     callFirewall('get_finding_totals', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/totals`, {
       range,
       startTime,
       endTime,
+      triage,
     }), extra, config));
 
   server.registerTool('group_findings', {
     title: 'Group Findings',
-    description: 'Read bounded finding aggregates by hook, tool, or risk class.',
+    description: 'Read bounded finding aggregates by hook, tool, risk class, or triage verdict. Use by=triage for exact true-positive, false-positive, and untriaged counts.',
     inputSchema: {
       firewall_id: FirewalledIdSchema,
       by: GroupBySchema,
+      ...triageShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, by, range, startTime, endTime }, extra) =>
-    callFirewall('group_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/group`, {
+  }, async ({ firewall_id, by, triage, range, startTime, endTime }, extra) => {
+    if (by === 'triage') {
+      return callTriageFindingGroups(firewall_id, { triage, range, startTime, endTime }, extra, config);
+    }
+    return callFirewall('group_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/group`, {
       by,
       range,
       startTime,
       endTime,
-    }), extra, config));
+      triage,
+    }), extra, config);
+  });
 
   server.registerTool('get_investigation_packet', {
     title: 'Get Investigation Packet',

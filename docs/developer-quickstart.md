@@ -2,12 +2,12 @@
 
 1. Configure the Firewall MCP audience and public OAuth client in `firewall-ui`.
 2. Deploy or run `firewall-ui` with `SILMARIL_MCP_API_ENABLED=true`.
-3. Configure this repo with `FIREWALL_UI_BASE_URL`, `MCP_PUBLIC_BASE_URL`, and `MCP_AUTH0_ORGANIZATION` when the Auth0 app requires organization login. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery.
+3. Configure this repo with `FIREWALL_UI_BASE_URL`, `MCP_PUBLIC_BASE_URL`, and `MCP_OAUTH_STATE_SECRET`. Set `MCP_AUTH0_ORGANIZATION` when the Auth0 app requires organization login. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery. `MCP_OAUTH_STATE_SECRET` signs hosted OAuth bridge state and must be a high-entropy secret.
 4. Run the MCP server locally on a different port from `firewall-ui`:
 
 ```sh
 npm install
-FIREWALL_UI_BASE_URL=http://localhost:3000 MCP_PUBLIC_BASE_URL=http://localhost:3002 PORT=3002 npm run dev
+FIREWALL_UI_BASE_URL=http://localhost:3000 MCP_PUBLIC_BASE_URL=http://localhost:3002 MCP_OAUTH_STATE_SECRET=dev-only-change-me PORT=3002 npm run dev
 ```
 
 5. Add the local server to an MCP client:

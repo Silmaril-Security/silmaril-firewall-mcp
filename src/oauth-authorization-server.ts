@@ -1,3 +1,9 @@
+import {
+  createHash,
+  createHmac,
+  randomUUID,
+  timingSafeEqual,
+} from 'node:crypto';
 import { z } from 'zod';
 import type { ServerConfig } from './config';
 import {
@@ -9,9 +15,12 @@ import { publicBaseUrl } from './oauth-metadata';
 const MAX_REGISTRATION_BYTES = 64_000;
 const MAX_TOKEN_REQUEST_BYTES = 64_000;
 const BRIDGE_STATE_VERSION = 1;
+const BRIDGE_STATE_MAX_AGE_MS = 10 * 60_000;
+const BRIDGE_CODE_MAX_AGE_MS = 10 * 60_000;
 const SUPPORTED_GRANT_TYPES = ['authorization_code', 'refresh_token'];
 const SUPPORTED_RESPONSE_TYPES = ['code'];
 const SUPPORTED_TOKEN_ENDPOINT_AUTH_METHOD = 'none';
+const SUPPORTED_CODE_CHALLENGE_METHODS = ['S256'];
 
 const UpstreamAuthorizationServerMetadataSchema = z.object({
   authorization_endpoint: z.string().url(),
@@ -34,12 +43,29 @@ const ClientRegistrationRequestSchema = z.object({
 const BridgeStateSchema = z.object({
   v: z.literal(BRIDGE_STATE_VERSION),
   redirect_uri: z.string().url(),
+  client_id: z.string().min(1),
+  code_challenge: z.string().min(1),
+  code_challenge_method: z.literal('S256'),
+  iat: z.number().int().nonnegative(),
+  nonce: z.string().min(1),
   state: z.string().optional(),
+});
+
+const BridgeCodeSchema = z.object({
+  v: z.literal(BRIDGE_STATE_VERSION),
+  code: z.string().min(1),
+  redirect_uri: z.string().url(),
+  client_id: z.string().min(1),
+  code_challenge: z.string().min(1),
+  code_challenge_method: z.literal('S256'),
+  iat: z.number().int().nonnegative(),
+  nonce: z.string().min(1),
 });
 
 type UpstreamAuthorizationServerMetadata = z.infer<typeof UpstreamAuthorizationServerMetadataSchema>;
 type ClientRegistrationRequest = z.infer<typeof ClientRegistrationRequestSchema>;
 type BridgeState = z.infer<typeof BridgeStateSchema>;
+type BridgeCode = z.infer<typeof BridgeCodeSchema>;
 
 function json(payload: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(payload), {
@@ -125,17 +151,72 @@ function bridgeCallbackUrl(config: ServerConfig): string {
   return new URL('/oauth/callback', publicBaseUrl(config)).toString();
 }
 
-function encodeBridgeState(state: BridgeState): string {
-  return Buffer.from(JSON.stringify(state), 'utf8').toString('base64url');
+function stateSigningSecret(config: ServerConfig): string {
+  if (!config.oauthStateSecret) {
+    throw new Error('MCP_OAUTH_STATE_SECRET is required for OAuth bridge state signing.');
+  }
+  return config.oauthStateSecret;
 }
 
-function decodeBridgeState(value: string | null): BridgeState {
+function signStatePayload(payload: string, config: ServerConfig): string {
+  return createHmac('sha256', stateSigningSecret(config))
+    .update(payload)
+    .digest('base64url');
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aBuffer = Buffer.from(a);
+  const bBuffer = Buffer.from(b);
+  return aBuffer.length === bBuffer.length && timingSafeEqual(aBuffer, bBuffer);
+}
+
+function encodeBridgeState(state: BridgeState, config: ServerConfig): string {
+  const payload = Buffer.from(JSON.stringify(state), 'utf8').toString('base64url');
+  return `${payload}.${signStatePayload(payload, config)}`;
+}
+
+function decodeBridgeState(value: string | null, config: ServerConfig): BridgeState {
   if (!value) throw new Error('Missing OAuth bridge state.');
   try {
-    return BridgeStateSchema.parse(JSON.parse(Buffer.from(value, 'base64url').toString('utf8')));
+    const [payload, signature, extra] = value.split('.');
+    if (!payload || !signature || extra !== undefined) throw new Error('Malformed OAuth bridge state.');
+    if (!safeEqual(signature, signStatePayload(payload, config))) {
+      throw new Error('Invalid OAuth bridge state signature.');
+    }
+    const state = BridgeStateSchema.parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
+    if (Date.now() - state.iat > BRIDGE_STATE_MAX_AGE_MS) {
+      throw new Error('Expired OAuth bridge state.');
+    }
+    return state;
   } catch {
     throw new Error('Invalid OAuth bridge state.');
   }
+}
+
+function encodeBridgeCode(code: BridgeCode, config: ServerConfig): string {
+  const payload = Buffer.from(JSON.stringify(code), 'utf8').toString('base64url');
+  return `${payload}.${signStatePayload(payload, config)}`;
+}
+
+function decodeBridgeCode(value: string, config: ServerConfig): BridgeCode {
+  try {
+    const [payload, signature, extra] = value.split('.');
+    if (!payload || !signature || extra !== undefined) throw new Error('Malformed OAuth bridge code.');
+    if (!safeEqual(signature, signStatePayload(payload, config))) {
+      throw new Error('Invalid OAuth bridge code signature.');
+    }
+    const code = BridgeCodeSchema.parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
+    if (Date.now() - code.iat > BRIDGE_CODE_MAX_AGE_MS) {
+      throw new Error('Expired OAuth bridge code.');
+    }
+    return code;
+  } catch {
+    throw new Error('Invalid OAuth bridge code.');
+  }
+}
+
+function s256Challenge(verifier: string): string {
+  return createHash('sha256').update(verifier).digest('base64url');
 }
 
 function isLoopbackRedirectUri(value: string): boolean {
@@ -210,8 +291,9 @@ export async function handleAuthorizationServerMetadataRequest(
       ),
       token_endpoint_auth_methods_supported: [SUPPORTED_TOKEN_ENDPOINT_AUTH_METHOD],
       code_challenge_methods_supported: valuesOrFallback(
-        upstreamMetadata.code_challenge_methods_supported,
-        ['S256'],
+        upstreamMetadata.code_challenge_methods_supported?.filter((item) =>
+          SUPPORTED_CODE_CHALLENGE_METHODS.includes(item)),
+        SUPPORTED_CODE_CHALLENGE_METHODS,
       ),
       scopes_supported: upstream.scopes,
       silmaril_upstream_issuer: upstream.issuer,
@@ -243,6 +325,14 @@ export async function handleAuthorizationRequest(
   }
 
   const url = new URL(req.url);
+  const requestedClientId = url.searchParams.get('client_id');
+  if (!requestedClientId) {
+    return json({
+      error: 'invalid_request',
+      error_description: 'client_id is required.',
+    }, { status: 400 });
+  }
+
   const redirectUri = url.searchParams.get('redirect_uri');
   if (!redirectUri || !isLoopbackRedirectUri(redirectUri)) {
     return json({
@@ -258,10 +348,8 @@ export async function handleAuthorizationRequest(
     }, { status: 400 });
   }
 
-  if (
-    !url.searchParams.get('code_challenge') ||
-    url.searchParams.get('code_challenge_method') !== 'S256'
-  ) {
+  const codeChallenge = url.searchParams.get('code_challenge');
+  if (!codeChallenge || url.searchParams.get('code_challenge_method') !== 'S256') {
     return json({
       error: 'invalid_request',
       error_description: 'S256 PKCE is required for authorization code flow.',
@@ -278,12 +366,23 @@ export async function handleAuthorizationRequest(
         error_description: 'firewall-ui MCP OAuth client ID is not configured.',
       }, { status: 503 });
     }
+    if (requestedClientId !== clientId) {
+      return json({
+        error: 'invalid_request',
+        error_description: 'client_id must match the registered MCP OAuth client.',
+      }, { status: 400 });
+    }
 
     const bridgeState = encodeBridgeState({
       v: BRIDGE_STATE_VERSION,
       redirect_uri: redirectUri,
+      client_id: clientId,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      iat: Date.now(),
+      nonce: randomUUID(),
       state: url.searchParams.get('state') ?? undefined,
-    });
+    }, config);
     const authorizationUrl = new URL(upstreamMetadata.authorization_endpoint);
     authorizationUrl.searchParams.set('response_type', 'code');
     authorizationUrl.searchParams.set('client_id', clientId);
@@ -308,7 +407,10 @@ export async function handleAuthorizationRequest(
   }
 }
 
-export async function handleOAuthCallbackRequest(req: Request): Promise<Response> {
+export async function handleOAuthCallbackRequest(
+  req: Request,
+  config: ServerConfig,
+): Promise<Response> {
   if (req.method !== 'GET') {
     return json({
       error: 'method_not_allowed',
@@ -322,7 +424,7 @@ export async function handleOAuthCallbackRequest(req: Request): Promise<Response
   const url = new URL(req.url);
   let bridgeState: BridgeState;
   try {
-    bridgeState = decodeBridgeState(url.searchParams.get('state'));
+    bridgeState = decodeBridgeState(url.searchParams.get('state'), config);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Invalid OAuth bridge state.';
     return json({
@@ -339,8 +441,21 @@ export async function handleOAuthCallbackRequest(req: Request): Promise<Response
   }
 
   const callbackUrl = new URL(bridgeState.redirect_uri);
-  for (const name of ['code', 'error', 'error_description', 'error_uri']) {
+  for (const name of ['error', 'error_description', 'error_uri']) {
     appendIfPresent(callbackUrl.searchParams, url.searchParams, name);
+  }
+  const code = url.searchParams.get('code');
+  if (code) {
+    callbackUrl.searchParams.set('code', encodeBridgeCode({
+      v: BRIDGE_STATE_VERSION,
+      code,
+      redirect_uri: bridgeState.redirect_uri,
+      client_id: bridgeState.client_id,
+      code_challenge: bridgeState.code_challenge,
+      code_challenge_method: 'S256',
+      iat: Date.now(),
+      nonce: randomUUID(),
+    }, config));
   }
   if (bridgeState.state) callbackUrl.searchParams.set('state', bridgeState.state);
 
@@ -382,12 +497,18 @@ export async function handleTokenRequest(
         error_description: 'firewall-ui MCP OAuth client ID is not configured.',
       }, { status: 503 });
     }
-
+    const requestedClientId = params.get('client_id');
     const grantType = params.get('grant_type');
     const upstreamParams = new URLSearchParams();
     upstreamParams.set('client_id', clientId);
 
     if (grantType === 'authorization_code') {
+      if (requestedClientId !== clientId) {
+        return json({
+          error: 'invalid_client',
+          error_description: 'client_id must match the registered MCP OAuth client.',
+        }, { status: 400 });
+      }
       const code = params.get('code');
       if (!code) {
         return json({
@@ -402,11 +523,45 @@ export async function handleTokenRequest(
           error_description: 'authorization_code grant requires code_verifier.',
         }, { status: 400 });
       }
+      const redirectUri = params.get('redirect_uri');
+      if (!redirectUri || !isLoopbackRedirectUri(redirectUri)) {
+        return json({
+          error: 'invalid_request',
+          error_description: 'authorization_code grant requires the original loopback redirect_uri.',
+        }, { status: 400 });
+      }
+      let bridgeCode: BridgeCode;
+      try {
+        bridgeCode = decodeBridgeCode(code, config);
+      } catch {
+        return json({
+          error: 'invalid_grant',
+          error_description: 'authorization code is invalid or expired.',
+        }, { status: 400 });
+      }
+      if (bridgeCode.client_id !== requestedClientId || bridgeCode.redirect_uri !== redirectUri) {
+        return json({
+          error: 'invalid_grant',
+          error_description: 'authorization code is not bound to this client or redirect_uri.',
+        }, { status: 400 });
+      }
+      if (!safeEqual(s256Challenge(codeVerifier), bridgeCode.code_challenge)) {
+        return json({
+          error: 'invalid_grant',
+          error_description: 'code_verifier does not match the authorization request.',
+        }, { status: 400 });
+      }
       upstreamParams.set('grant_type', 'authorization_code');
-      upstreamParams.set('code', code);
+      upstreamParams.set('code', bridgeCode.code);
       upstreamParams.set('redirect_uri', bridgeCallbackUrl(config));
       upstreamParams.set('code_verifier', codeVerifier);
     } else if (grantType === 'refresh_token') {
+      if (requestedClientId && requestedClientId !== clientId) {
+        return json({
+          error: 'invalid_client',
+          error_description: 'client_id must match the registered MCP OAuth client.',
+        }, { status: 400 });
+      }
       const refreshToken = params.get('refresh_token');
       if (!refreshToken) {
         return json({
