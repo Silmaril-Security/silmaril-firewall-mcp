@@ -4,10 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { handleMcpRequest } from '../src/http';
 import { readConfig } from '../src/config';
-import {
-  getFirewallMcpPublicConfig,
-  resetFirewallMcpConfigCacheForTests,
-} from '../src/firewall-ui-config';
+import { getFirewallMcpPublicConfig } from '../src/firewall-ui-config';
 import { firewallGetJson, FirewallApiError } from '../src/firewall-ui-client';
 import { handleProtectedResourceMetadataRequest } from '../src/oauth-metadata';
 
@@ -34,7 +31,6 @@ beforeEach(() => {
   delete process.env.AUTH0_MCP_AUDIENCE;
   delete process.env.MCP_PUBLIC_BASE_URL;
   delete process.env.MCP_AUDIT_URL;
-  resetFirewallMcpConfigCacheForTests();
 });
 
 afterEach(() => {
@@ -257,18 +253,23 @@ test('OAuth metadata ignores request-controlled forwarded host headers', async (
   assert.equal(body.resource.includes('attacker.example'), false);
 });
 
-test('caches firewall-ui public OAuth config briefly', async () => {
+test('refreshes firewall-ui public OAuth config before using it', async () => {
   installMockFetch();
   const config = readConfig();
 
   const first = await getFirewallMcpPublicConfig(config);
-  const second = await getFirewallMcpPublicConfig(config);
+  publicConfigOverride = { enabled: false };
 
-  assert.equal(first.audience, second.audience);
+  assert.equal(first.audience, 'https://silmaril.security/firewall-ui/mcp-test');
+  await assert.rejects(
+    () => getFirewallMcpPublicConfig(config),
+    /firewall-ui MCP API is disabled/,
+  );
   const configCalls = upstreamCalls.filter((call) =>
     new URL(call.url).pathname === '/api/mcp/v1/config');
-  assert.equal(configCalls.length, 1);
+  assert.equal(configCalls.length, 2);
   assert.equal(configCalls[0].authorization, null);
+  assert.equal(configCalls[1].authorization, null);
 });
 
 test('rejects disabled firewall-ui public OAuth config without caching it', async () => {

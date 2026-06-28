@@ -7,7 +7,6 @@ export const DEFAULT_AUTHORIZATION_SCOPES = [
   'findings:read',
 ] as const;
 
-const CACHE_MS = 60_000;
 const MAX_PUBLIC_CONFIG_BYTES = 64_000;
 
 const RawPublicConfigSchema = z.object({
@@ -27,10 +26,6 @@ const RawPublicConfigSchema = z.object({
 export type FirewallMcpPublicConfig = z.infer<typeof RawPublicConfigSchema> & {
   resource: string;
 };
-
-let cachedConfig:
-  | { config: FirewallMcpPublicConfig; baseUrl: string; expiresAt: number }
-  | null = null;
 
 function configUrl(config: ServerConfig): URL {
   return new URL('/api/mcp/v1/config', `${config.firewallUiBaseUrl}/`);
@@ -54,23 +49,10 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   }
 }
 
-export function resetFirewallMcpConfigCacheForTests() {
-  cachedConfig = null;
-}
-
 export async function getFirewallMcpPublicConfig(
   config: ServerConfig,
   signal?: AbortSignal,
 ): Promise<FirewallMcpPublicConfig> {
-  const now = Date.now();
-  if (
-    cachedConfig &&
-    cachedConfig.baseUrl === config.firewallUiBaseUrl &&
-    cachedConfig.expiresAt > now
-  ) {
-    return cachedConfig.config;
-  }
-
   const response = await fetch(configUrl(config), {
     method: 'GET',
     headers: { accept: 'application/json' },
@@ -87,14 +69,8 @@ export async function getFirewallMcpPublicConfig(
     throw new Error('firewall-ui MCP API is disabled.');
   }
 
-  const parsed: FirewallMcpPublicConfig = {
+  return {
     ...raw,
     resource: raw.resource ?? raw.audience,
   };
-  cachedConfig = {
-    config: parsed,
-    baseUrl: config.firewallUiBaseUrl,
-    expiresAt: now + CACHE_MS,
-  };
-  return parsed;
 }
