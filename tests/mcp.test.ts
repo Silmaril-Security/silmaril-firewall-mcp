@@ -836,8 +836,12 @@ test('uses audience as resource for older firewall-ui public config responses', 
   assert.equal(config.resource, 'https://silmaril.security/firewall-ui/mcp-legacy');
 });
 
-test('finding tools forward triage filters to firewall-ui aggregate endpoints', async () => {
+test('finding tools forward triage and metadata filters to firewall-ui endpoints', async () => {
   const { client } = await connectedClient();
+  const metadata = [
+    { key: 'stage', value: 'prod' },
+    { key: 'silmaril.request_id', value: 'req-123' },
+  ];
 
   const totals = await client.callTool({
     name: 'get_finding_totals',
@@ -845,6 +849,7 @@ test('finding tools forward triage filters to firewall-ui aggregate endpoints', 
       firewall_id: 'yc-prod-us-west-2',
       range: '1d',
       triage: 'false_positive',
+      metadata,
     },
   });
   assert.equal(totals.isError, undefined);
@@ -852,12 +857,14 @@ test('finding tools forward triage filters to firewall-ui aggregate endpoints', 
   let lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
   assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/totals');
   assert.equal(lastUrl.searchParams.get('triage'), 'false_positive');
+  assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod', 'silmaril.request_id=req-123']);
 
   const findings = await client.callTool({
     name: 'list_findings',
     arguments: {
       firewall_id: 'yc-prod-us-west-2',
       triage: 'true_positive',
+      metadata,
       pageSize: 25,
     },
   });
@@ -865,6 +872,7 @@ test('finding tools forward triage filters to firewall-ui aggregate endpoints', 
   lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
   assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings');
   assert.equal(lastUrl.searchParams.get('triage'), 'true_positive');
+  assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod', 'silmaril.request_id=req-123']);
 
   const grouped = await client.callTool({
     name: 'group_findings',
@@ -872,6 +880,7 @@ test('finding tools forward triage filters to firewall-ui aggregate endpoints', 
       firewall_id: 'yc-prod-us-west-2',
       by: 'hook',
       triage: 'false_positive',
+      metadata,
     },
   });
   assert.equal(grouped.isError, undefined);
@@ -879,16 +888,19 @@ test('finding tools forward triage filters to firewall-ui aggregate endpoints', 
   assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/group');
   assert.equal(lastUrl.searchParams.get('by'), 'hook');
   assert.equal(lastUrl.searchParams.get('triage'), 'false_positive');
+  assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod', 'silmaril.request_id=req-123']);
 });
 
 test('group_findings can aggregate exact counts by triage verdict', async () => {
   const { client } = await connectedClient();
+  const metadata = [{ key: 'stage', value: 'prod' }];
   const result = await client.callTool({
     name: 'group_findings',
     arguments: {
       firewall_id: 'yc-prod-us-west-2',
       by: 'triage',
       range: '1d',
+      metadata,
     },
   });
 
@@ -914,8 +926,15 @@ test('group_findings can aggregate exact counts by triage verdict', async () => 
   const triageQueries = upstreamCalls
     .map((call) => new URL(call.url))
     .filter((url) => url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/totals')
-    .map((url) => url.searchParams.get('triage'));
-  assert.deepEqual(triageQueries, ['true_positive', 'false_positive', 'untriaged']);
+    .map((url) => ({
+      triage: url.searchParams.get('triage'),
+      meta: url.searchParams.getAll('meta'),
+    }));
+  assert.deepEqual(triageQueries, [
+    { triage: 'true_positive', meta: ['stage=prod'] },
+    { triage: 'false_positive', meta: ['stage=prod'] },
+    { triage: 'untriaged', meta: ['stage=prod'] },
+  ]);
 });
 
 test('group_findings uses total fields when triage totals omit blocked', async () => {
