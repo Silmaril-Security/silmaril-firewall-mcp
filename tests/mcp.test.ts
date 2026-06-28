@@ -531,6 +531,39 @@ test('dynamic client registration rejects callbacks authorize would reject', asy
   assert.equal(body.error_description, 'redirect_uris must be loopback callback URLs.');
 });
 
+test('dynamic client registration rejects unsupported OAuth capabilities', async () => {
+  installMockFetch();
+
+  const cases: Array<[Record<string, unknown>, string]> = [
+    [{ grant_types: ['client_credentials'], response_types: ['code'] }, 'grant_types must only include authorization_code, refresh_token.'],
+    [{ grant_types: ['authorization_code'], response_types: ['token'] }, 'response_types must only include code.'],
+    [{
+      grant_types: ['authorization_code'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'client_secret_basic',
+    }, 'token_endpoint_auth_method must be none.'],
+  ];
+
+  for (const [metadata, expectedDescription] of cases) {
+    const response = await handleClientRegistrationRequest(
+      new Request('https://mcp.test/oauth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          redirect_uris: ['http://127.0.0.1:1455/oauth/callback'],
+          ...metadata,
+        }),
+      }),
+      readConfig(),
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(body.error, 'invalid_client_metadata');
+    assert.equal(body.error_description, expectedDescription);
+  }
+});
+
 test('OAuth metadata ignores request-controlled forwarded host headers', async () => {
   installMockFetch();
 

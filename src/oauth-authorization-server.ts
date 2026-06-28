@@ -9,6 +9,9 @@ import { publicBaseUrl } from './oauth-metadata';
 const MAX_REGISTRATION_BYTES = 64_000;
 const MAX_TOKEN_REQUEST_BYTES = 64_000;
 const BRIDGE_STATE_VERSION = 1;
+const SUPPORTED_GRANT_TYPES = ['authorization_code', 'refresh_token'];
+const SUPPORTED_RESPONSE_TYPES = ['code'];
+const SUPPORTED_TOKEN_ENDPOINT_AUTH_METHOD = 'none';
 
 const UpstreamAuthorizationServerMetadataSchema = z.object({
   authorization_endpoint: z.string().url(),
@@ -87,6 +90,25 @@ async function readBoundedForm(req: Request): Promise<URLSearchParams> {
 
 function valuesOrFallback(values: string[] | undefined, fallback: string[]): string[] {
   return values && values.length > 0 ? values : fallback;
+}
+
+function invalidClientMetadata(description: string): Response {
+  return json({
+    error: 'invalid_client_metadata',
+    error_description: description,
+  }, { status: 400 });
+}
+
+function unsupportedRegistrationValues(
+  field: string,
+  values: string[] | undefined,
+  supported: string[],
+): Response | null {
+  if (!values) return null;
+  if (values.length === 0 || values.some((value) => !supported.includes(value))) {
+    return invalidClientMetadata(`${field} must only include ${supported.join(', ')}.`);
+  }
+  return null;
 }
 
 function redirect(location: URL | string): Response {
@@ -179,14 +201,14 @@ export async function handleAuthorizationServerMetadataRequest(
       registration_endpoint: new URL('/oauth/register', issuer).toString(),
       response_types_supported: valuesOrFallback(
         upstreamMetadata.response_types_supported?.filter((item) => item === 'code'),
-        ['code'],
+        SUPPORTED_RESPONSE_TYPES,
       ),
       grant_types_supported: valuesOrFallback(
         upstreamMetadata.grant_types_supported?.filter((item) =>
           item === 'authorization_code' || item === 'refresh_token'),
-        ['authorization_code', 'refresh_token'],
+        SUPPORTED_GRANT_TYPES,
       ),
-      token_endpoint_auth_methods_supported: ['none'],
+      token_endpoint_auth_methods_supported: [SUPPORTED_TOKEN_ENDPOINT_AUTH_METHOD],
       code_challenge_methods_supported: valuesOrFallback(
         upstreamMetadata.code_challenge_methods_supported,
         ['S256'],
@@ -465,19 +487,37 @@ export async function handleClientRegistrationRequest(
     }
 
     if (registration.redirect_uris?.some((uri) => !isLoopbackRedirectUri(uri))) {
-      return json({
-        error: 'invalid_client_metadata',
-        error_description: 'redirect_uris must be loopback callback URLs.',
-      }, { status: 400 });
+      return invalidClientMetadata('redirect_uris must be loopback callback URLs.');
+    }
+
+    const grantTypesError = unsupportedRegistrationValues(
+      'grant_types',
+      registration.grant_types,
+      SUPPORTED_GRANT_TYPES,
+    );
+    if (grantTypesError) return grantTypesError;
+
+    const responseTypesError = unsupportedRegistrationValues(
+      'response_types',
+      registration.response_types,
+      SUPPORTED_RESPONSE_TYPES,
+    );
+    if (responseTypesError) return responseTypesError;
+
+    if (
+      registration.token_endpoint_auth_method &&
+      registration.token_endpoint_auth_method !== SUPPORTED_TOKEN_ENDPOINT_AUTH_METHOD
+    ) {
+      return invalidClientMetadata('token_endpoint_auth_method must be none.');
     }
 
     return json({
       client_id: clientId,
       client_id_issued_at: Math.floor(Date.now() / 1000),
       redirect_uris: registration.redirect_uris ?? [],
-      grant_types: registration.grant_types ?? ['authorization_code', 'refresh_token'],
-      response_types: registration.response_types ?? ['code'],
-      token_endpoint_auth_method: 'none',
+      grant_types: registration.grant_types ?? [...SUPPORTED_GRANT_TYPES],
+      response_types: registration.response_types ?? [...SUPPORTED_RESPONSE_TYPES],
+      token_endpoint_auth_method: SUPPORTED_TOKEN_ENDPOINT_AUTH_METHOD,
       scope: registration.scope ?? upstream.scopes.join(' '),
       client_name: registration.client_name ?? 'Silmaril Firewall MCP Client',
     }, { status: 201 });
