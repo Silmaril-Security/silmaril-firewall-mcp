@@ -4,7 +4,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { handleMcpRequest } from '../src/http';
 import { readConfig } from '../src/config';
+import { getFirewallMcpPublicConfig } from '../src/firewall-ui-config';
 import { firewallGetJson, FirewallApiError } from '../src/firewall-ui-client';
+import { handleProtectedResourceMetadataRequest } from '../src/oauth-metadata';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
@@ -17,13 +19,17 @@ interface UpstreamCall {
 
 let upstreamCalls: UpstreamCall[] = [];
 let auditCalls: UpstreamCall[] = [];
+let publicConfigOverride: Record<string, unknown> = {};
 
 beforeEach(() => {
   upstreamCalls = [];
   auditCalls = [];
+  publicConfigOverride = {};
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
-  process.env.MCP_ALLOWED_ORIGINS = 'https://codex.test';
-  process.env.AUTH0_MCP_AUDIENCE = 'https://silmaril.security/firewall-ui/mcp-test';
+  process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS = 'https://codex.test';
+  delete process.env.MCP_ALLOWED_ORIGINS;
+  delete process.env.AUTH0_MCP_AUDIENCE;
+  process.env.MCP_PUBLIC_BASE_URL = 'https://mcp.test';
   delete process.env.MCP_AUDIT_URL;
 });
 
@@ -73,6 +79,30 @@ function installMockFetch() {
       authorization: req.headers.get('authorization'),
       body: await req.text(),
     });
+
+    if (url.pathname === '/api/mcp/v1/config') {
+      return json({
+        version: 'v1',
+        enabled: true,
+        issuer: 'https://tenant.example.auth0.com/',
+        authorization_servers: ['https://tenant.example.auth0.com/'],
+        audience: 'https://silmaril.security/firewall-ui/mcp-test',
+        resource: 'https://silmaril.security/firewall-ui/mcp-test',
+        scopes: [
+          'firewalls:read',
+          'metrics:read',
+          'findings:read',
+          'findings:detail',
+          'payload:read',
+          'trace:read',
+        ],
+        oauth: {
+          client_id: 'public-mcp-client-id',
+          client_id_source: 'AUTH0_MCP_CLIENT_ID',
+        },
+        ...publicConfigOverride,
+      });
+    }
 
     if (url.pathname === '/api/mcp/v1/firewalls') {
       return json({
@@ -180,6 +210,111 @@ test('requires bearer auth on MCP requests', async () => {
 
   assert.equal(response.status, 401);
   assert.equal((await response.json()).error.code, 'token_missing');
+  const challenge = response.headers.get('www-authenticate') ?? '';
+  assert.match(challenge, /^Bearer /);
+  assert.match(challenge, /resource_metadata="https:\/\/mcp\.test\/\.well-known\/oauth-protected-resource\/mcp"/);
+  assert.match(challenge, /scope="firewalls:read metrics:read findings:read"/);
+});
+
+test('rejects OAuth discovery without a configured public base URL', async () => {
+  delete process.env.MCP_PUBLIC_BASE_URL;
+
+  const response = await handleMcpRequest(new Request('https://attacker.example/mcp', {
+    method: 'POST',
+    headers: {
+      origin: 'https://codex.test',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  }));
+
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).error.code, 'mcp_oauth_metadata_unavailable');
+  assert.equal(response.headers.get('www-authenticate'), null);
+});
+
+test('serves OAuth protected resource metadata from firewall-ui public config', async () => {
+  installMockFetch();
+
+  const response = await handleProtectedResourceMetadataRequest(
+    new Request('https://mcp.test/.well-known/oauth-protected-resource/mcp'),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.resource, 'https://mcp.test/mcp');
+  assert.deepEqual(body.authorization_servers, ['https://tenant.example.auth0.com/']);
+  assert.equal(body.silmaril_oauth_resource, 'https://silmaril.security/firewall-ui/mcp-test');
+  assert.equal(body.silmaril_oauth_client_id, 'public-mcp-client-id');
+  assert.ok(body.scopes_supported.includes('firewalls:read'));
+  assert.ok(body.scopes_supported.includes('trace:read'));
+});
+
+test('OAuth metadata ignores request-controlled forwarded host headers', async () => {
+  installMockFetch();
+
+  const response = await handleProtectedResourceMetadataRequest(
+    new Request('https://mcp.test/.well-known/oauth-protected-resource/mcp', {
+      headers: {
+        'x-forwarded-host': 'attacker.example',
+        'x-forwarded-proto': 'https',
+      },
+    }),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.resource, 'https://mcp.test/mcp');
+  assert.equal(body.resource.includes('attacker.example'), false);
+});
+
+test('refreshes firewall-ui public OAuth config before using it', async () => {
+  installMockFetch();
+  const config = readConfig();
+
+  const first = await getFirewallMcpPublicConfig(config);
+  publicConfigOverride = { enabled: false };
+
+  assert.equal(first.audience, 'https://silmaril.security/firewall-ui/mcp-test');
+  await assert.rejects(
+    () => getFirewallMcpPublicConfig(config),
+    /firewall-ui MCP API is disabled/,
+  );
+  const configCalls = upstreamCalls.filter((call) =>
+    new URL(call.url).pathname === '/api/mcp/v1/config');
+  assert.equal(configCalls.length, 2);
+  assert.equal(configCalls[0].authorization, null);
+  assert.equal(configCalls[1].authorization, null);
+});
+
+test('rejects disabled firewall-ui public OAuth config without caching it', async () => {
+  installMockFetch();
+  publicConfigOverride = { enabled: false };
+  const config = readConfig();
+
+  await assert.rejects(
+    () => getFirewallMcpPublicConfig(config),
+    /firewall-ui MCP API is disabled/,
+  );
+
+  publicConfigOverride = {};
+  const recovered = await getFirewallMcpPublicConfig(config);
+  assert.equal(recovered.enabled, true);
+});
+
+test('uses audience as resource for older firewall-ui public config responses', async () => {
+  installMockFetch();
+  publicConfigOverride = {
+    resource: undefined,
+    audience: 'https://silmaril.security/firewall-ui/mcp-legacy',
+  };
+
+  const config = await getFirewallMcpPublicConfig(readConfig());
+
+  assert.equal(config.audience, 'https://silmaril.security/firewall-ui/mcp-legacy');
+  assert.equal(config.resource, 'https://silmaril.security/firewall-ui/mcp-legacy');
 });
 
 test('normalizes firewall-ui errors into MCP tool errors', async () => {
@@ -274,8 +409,8 @@ test('chunked upstream responses are rejected as soon as they exceed the size ca
         firewallUiBaseUrl: 'https://firewall.test',
         allowedOrigins: [],
         maxResponseBytes: 16,
-        mcpAudience: null,
         auditUrl: null,
+        publicBaseUrl: null,
       },
     }),
     (err) =>

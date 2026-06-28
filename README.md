@@ -22,23 +22,39 @@ Full finding and trace tools require a `reason`. The MCP layer emits metadata-on
 
 ```sh
 FIREWALL_UI_BASE_URL=https://app.silmaril.dev
-MCP_ALLOWED_ORIGINS=https://chatgpt.com,https://codex.openai.com
-AUTH0_MCP_AUDIENCE=https://silmaril.security/firewall-ui/mcp
+MCP_PUBLIC_BASE_URL=https://firewall-mcp.silmaril.dev
+MCP_ADDITIONAL_ALLOWED_ORIGINS=
 MCP_MAX_RESPONSE_BYTES=1000000
 MCP_AUDIT_URL=
 ```
 
-`MCP_MAX_RESPONSE_BYTES` defaults to 1 MB and is clamped to a 5 MB hard ceiling.
+`FIREWALL_UI_BASE_URL` and `MCP_PUBLIC_BASE_URL` are required deployment-owned values. `MCP_PUBLIC_BASE_URL` is the canonical public MCP origin used for OAuth discovery, so discovery never trusts request host headers. ChatGPT, ChatGPT legacy, and Codex origins are allowed by default; add browser-hosted clients with `MCP_ADDITIONAL_ALLOWED_ORIGINS`. `MCP_MAX_RESPONSE_BYTES` defaults to 1 MB and is clamped to a 5 MB hard ceiling.
 
-## Codex Setup
+Auth0 issuer, MCP resource/audience, scopes, and the public OAuth client ID are discovered from `firewall-ui` at `/api/mcp/v1/config`. Do not configure `AUTH0_MCP_AUDIENCE` in this repo.
+
+## Client Setup
 
 Use OAuth. Do not configure a static bearer token env var.
+
+Discovery-capable MCP clients should only need the MCP URL:
+
+```txt
+https://<mcp-host>/mcp
+```
+
+Clients that require explicit OAuth fields should use the public values returned by `firewall-ui`:
+
+```sh
+curl https://app.silmaril.dev/api/mcp/v1/config
+```
+
+Codex explicit setup:
 
 ```sh
 codex mcp add silmaril-firewall \
   --url https://<mcp-host>/mcp \
-  --oauth-client-id <auth0-client-id> \
-  --oauth-resource https://silmaril.security/firewall-ui/mcp
+  --oauth-client-id <oauth.client_id from firewall-ui config> \
+  --oauth-resource <resource from firewall-ui config>
 ```
 
 ## Development
