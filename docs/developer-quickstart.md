@@ -1,34 +1,19 @@
 # Developer Quickstart
 
-1. Configure Auth0 API access tokens for the Firewall MCP audience in `firewall-ui`.
+1. Configure the Firewall MCP audience and public OAuth client in `firewall-ui`.
 2. Deploy or run `firewall-ui` with `SILMARIL_MCP_API_ENABLED=true`.
-3. Configure this repo with `FIREWALL_UI_BASE_URL` and `MCP_PUBLIC_BASE_URL`. Set `MCP_ADDITIONAL_ALLOWED_ORIGINS` only for additional browser-hosted MCP clients.
-4. Run the MCP server locally. Use a different port from `firewall-ui`:
+3. Configure this repo with `FIREWALL_UI_BASE_URL` and `MCP_PUBLIC_BASE_URL`. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery.
+4. Run the MCP server locally on a different port from `firewall-ui`:
 
 ```sh
 npm install
 FIREWALL_UI_BASE_URL=http://localhost:3000 MCP_PUBLIC_BASE_URL=http://localhost:3002 PORT=3002 npm run dev
 ```
 
-5. Add the server to a discovery-capable MCP client using only the MCP URL:
-
-```txt
-http://localhost:3002/mcp
-```
-
-For clients that require explicit OAuth fields, read the public values from `firewall-ui`:
+5. Add the local server to an MCP client:
 
 ```sh
-curl "$FIREWALL_UI_BASE_URL/api/mcp/v1/config"
-```
-
-Codex explicit setup:
-
-```sh
-codex mcp add silmaril-firewall \
-  --url http://localhost:3002/mcp \
-  --oauth-client-id <oauth.client_id from firewall-ui config> \
-  --oauth-resource <resource from firewall-ui config>
+codex mcp add silmaril-firewall --url http://localhost:3002/mcp
 ```
 
 6. Start with aggregate tools:
@@ -42,6 +27,10 @@ get_investigation_packet
 ```
 
 Use `get_finding` or `get_finding_trace` only after a compact evidence path is insufficient.
+
+## Operator Notes
+
+`firewall-ui` exposes `GET /api/mcp/v1/config` for MCP-server diagnostics and OAuth discovery support. It returns non-secret issuer, resource, scope, enabled-state, and public-client metadata.
 
 ## Local Validation
 
