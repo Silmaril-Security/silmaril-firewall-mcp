@@ -4,7 +4,12 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { handleMcpRequest } from '../src/http';
 import { readConfig } from '../src/config';
+import {
+  getFirewallMcpPublicConfig,
+  resetFirewallMcpConfigCacheForTests,
+} from '../src/firewall-ui-config';
 import { firewallGetJson, FirewallApiError } from '../src/firewall-ui-client';
+import { handleProtectedResourceMetadataRequest } from '../src/oauth-metadata';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
@@ -22,9 +27,12 @@ beforeEach(() => {
   upstreamCalls = [];
   auditCalls = [];
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
-  process.env.MCP_ALLOWED_ORIGINS = 'https://codex.test';
-  process.env.AUTH0_MCP_AUDIENCE = 'https://silmaril.security/firewall-ui/mcp-test';
+  process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS = 'https://codex.test';
+  delete process.env.MCP_ALLOWED_ORIGINS;
+  delete process.env.AUTH0_MCP_AUDIENCE;
+  delete process.env.MCP_PUBLIC_BASE_URL;
   delete process.env.MCP_AUDIT_URL;
+  resetFirewallMcpConfigCacheForTests();
 });
 
 afterEach(() => {
@@ -73,6 +81,29 @@ function installMockFetch() {
       authorization: req.headers.get('authorization'),
       body: await req.text(),
     });
+
+    if (url.pathname === '/api/mcp/v1/config') {
+      return json({
+        version: 'v1',
+        enabled: true,
+        issuer: 'https://tenant.example.auth0.com/',
+        authorization_servers: ['https://tenant.example.auth0.com/'],
+        audience: 'https://silmaril.security/firewall-ui/mcp-test',
+        resource: 'https://silmaril.security/firewall-ui/mcp-test',
+        scopes: [
+          'firewalls:read',
+          'metrics:read',
+          'findings:read',
+          'findings:detail',
+          'payload:read',
+          'trace:read',
+        ],
+        oauth: {
+          client_id: 'public-mcp-client-id',
+          client_id_source: 'AUTH0_MCP_CLIENT_ID',
+        },
+      });
+    }
 
     if (url.pathname === '/api/mcp/v1/firewalls') {
       return json({
@@ -180,6 +211,42 @@ test('requires bearer auth on MCP requests', async () => {
 
   assert.equal(response.status, 401);
   assert.equal((await response.json()).error.code, 'token_missing');
+  const challenge = response.headers.get('www-authenticate') ?? '';
+  assert.match(challenge, /^Bearer /);
+  assert.match(challenge, /resource_metadata="https:\/\/mcp\.test\/\.well-known\/oauth-protected-resource\/mcp"/);
+  assert.match(challenge, /scope="firewalls:read metrics:read findings:read"/);
+});
+
+test('serves OAuth protected resource metadata from firewall-ui public config', async () => {
+  installMockFetch();
+
+  const response = await handleProtectedResourceMetadataRequest(
+    new Request('https://mcp.test/.well-known/oauth-protected-resource/mcp'),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.resource, 'https://mcp.test/mcp');
+  assert.deepEqual(body.authorization_servers, ['https://tenant.example.auth0.com/']);
+  assert.equal(body.silmaril_oauth_resource, 'https://silmaril.security/firewall-ui/mcp-test');
+  assert.equal(body.silmaril_oauth_client_id, 'public-mcp-client-id');
+  assert.ok(body.scopes_supported.includes('firewalls:read'));
+  assert.ok(body.scopes_supported.includes('trace:read'));
+});
+
+test('caches firewall-ui public OAuth config briefly', async () => {
+  installMockFetch();
+  const config = readConfig();
+
+  const first = await getFirewallMcpPublicConfig(config);
+  const second = await getFirewallMcpPublicConfig(config);
+
+  assert.equal(first.audience, second.audience);
+  const configCalls = upstreamCalls.filter((call) =>
+    new URL(call.url).pathname === '/api/mcp/v1/config');
+  assert.equal(configCalls.length, 1);
+  assert.equal(configCalls[0].authorization, null);
 });
 
 test('normalizes firewall-ui errors into MCP tool errors', async () => {
@@ -274,8 +341,8 @@ test('chunked upstream responses are rejected as soon as they exceed the size ca
         firewallUiBaseUrl: 'https://firewall.test',
         allowedOrigins: [],
         maxResponseBytes: 16,
-        mcpAudience: null,
         auditUrl: null,
+        publicBaseUrl: null,
       },
     }),
     (err) =>

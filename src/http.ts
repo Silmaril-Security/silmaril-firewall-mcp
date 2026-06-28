@@ -1,6 +1,11 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { readConfig, type ServerConfig } from './config';
+import {
+  getFirewallMcpPublicConfig,
+  type FirewallMcpPublicConfig,
+} from './firewall-ui-config';
+import { wwwAuthenticateHeader } from './oauth-metadata';
 import { createFirewallMcpServer } from './server';
 
 const CORS_ALLOW_HEADERS = [
@@ -14,14 +19,22 @@ const CORS_ALLOW_HEADERS = [
 const CORS_EXPOSE_HEADERS = [
   'mcp-session-id',
   'mcp-protocol-version',
+  'www-authenticate',
 ].join(', ');
 
-function json(status: number, code: string, message: string, origin: string | null): Response {
+function json(
+  status: number,
+  code: string,
+  message: string,
+  origin: string | null,
+  headers?: HeadersInit,
+): Response {
   return withCors(new Response(JSON.stringify({ error: { code, message } }), {
     status,
     headers: {
       'content-type': 'application/json',
       'cache-control': 'no-store',
+      ...(headers ?? {}),
     },
   }), origin);
 }
@@ -53,18 +66,16 @@ function bearerToken(req: Request): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function authInfo(token: string, config: ServerConfig): AuthInfo {
+function authInfo(token: string, publicConfig: FirewallMcpPublicConfig): AuthInfo {
   const info: AuthInfo = {
     token,
     clientId: 'auth0-user-oauth',
     scopes: [],
   };
-  if (config.mcpAudience) {
-    try {
-      info.resource = new URL(config.mcpAudience);
-    } catch {
-      // firewall-ui owns audience validation; malformed local config should not leak into logs.
-    }
+  try {
+    info.resource = new URL(publicConfig.resource || publicConfig.audience);
+  } catch {
+    // firewall-ui owns audience validation; malformed upstream config should not leak into logs.
   }
   return info;
 }
@@ -82,7 +93,17 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
 
   const token = bearerToken(req);
   if (!token) {
-    return json(401, 'token_missing', 'Missing bearer token.', origin.origin);
+    return json(401, 'token_missing', 'Missing bearer token.', origin.origin, {
+      'www-authenticate': wwwAuthenticateHeader(req, config),
+    });
+  }
+
+  let publicConfig: FirewallMcpPublicConfig;
+  try {
+    publicConfig = await getFirewallMcpPublicConfig(config, req.signal);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'MCP OAuth config is unavailable.';
+    return json(503, 'mcp_oauth_config_unavailable', message, origin.origin);
   }
 
   const transport = new WebStandardStreamableHTTPServerTransport({
@@ -93,7 +114,7 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
   await server.connect(transport);
 
   const response = await transport.handleRequest(req, {
-    authInfo: authInfo(token, config),
+    authInfo: authInfo(token, publicConfig),
   });
   return withCors(response, origin.origin);
 }
