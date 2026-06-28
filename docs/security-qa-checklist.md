@@ -5,10 +5,12 @@
 - Auth0 access tokens are validated by `firewall-ui`, not the MCP repo.
 - The MCP route requires `Authorization: Bearer` for every non-OPTIONS MCP request.
 - OAuth Protected Resource Metadata is available at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`.
+- OAuth Authorization Server Metadata is available at `/.well-known/oauth-authorization-server` with local dynamic client registration, hosted callback bridging, and token exchange forwarding.
 - Missing-token `401` responses include `WWW-Authenticate` with `resource_metadata` and aggregate/search scope guidance.
 - The MCP route rejects disallowed `Origin` headers before MCP message handling.
 - The MCP server forwards user access tokens only to the configured `FIREWALL_UI_BASE_URL`.
 - The MCP server discovers issuer, audience/resource, scopes, and public OAuth client ID from `firewall-ui` `/api/mcp/v1/config`.
+- The OAuth bridge sends the configured default Auth0 organization when the client does not supply one.
 - `firewall-ui` rejects wrong issuer, wrong audience, expiry, missing org, missing tenant, missing admin claim, and missing scopes.
 - Cross-tenant resource probes are re-scoped through `firewall-ui` deployment lookup and return deterministic `404`.
 

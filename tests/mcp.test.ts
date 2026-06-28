@@ -7,6 +7,13 @@ import { readConfig } from '../src/config';
 import { getFirewallMcpPublicConfig } from '../src/firewall-ui-config';
 import { firewallGetJson, FirewallApiError } from '../src/firewall-ui-client';
 import { handleProtectedResourceMetadataRequest } from '../src/oauth-metadata';
+import {
+  handleAuthorizationRequest,
+  handleAuthorizationServerMetadataRequest,
+  handleClientRegistrationRequest,
+  handleOAuthCallbackRequest,
+  handleTokenRequest,
+} from '../src/oauth-authorization-server';
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
@@ -19,17 +26,20 @@ interface UpstreamCall {
 
 let upstreamCalls: UpstreamCall[] = [];
 let auditCalls: UpstreamCall[] = [];
+let tokenCalls: UpstreamCall[] = [];
 let publicConfigOverride: Record<string, unknown> = {};
 
 beforeEach(() => {
   upstreamCalls = [];
   auditCalls = [];
+  tokenCalls = [];
   publicConfigOverride = {};
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
   process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS = 'https://codex.test';
   delete process.env.MCP_ALLOWED_ORIGINS;
   delete process.env.AUTH0_MCP_AUDIENCE;
   process.env.MCP_PUBLIC_BASE_URL = 'https://mcp.test';
+  delete process.env.MCP_AUTH0_ORGANIZATION;
   delete process.env.MCP_AUDIT_URL;
 });
 
@@ -68,6 +78,40 @@ function installMockFetch() {
         body: await req.text(),
       });
       return json({ ok: true });
+    }
+
+    if (url.hostname === 'tenant.example.auth0.com') {
+      if (
+        url.pathname === '/.well-known/oauth-authorization-server' ||
+        url.pathname === '/.well-known/openid-configuration'
+      ) {
+        return json({
+          issuer: 'https://tenant.example.auth0.com/',
+          authorization_endpoint: 'https://tenant.example.auth0.com/authorize',
+          token_endpoint: 'https://tenant.example.auth0.com/oauth/token',
+          registration_endpoint: 'https://tenant.example.auth0.com/oidc/register',
+          code_challenge_methods_supported: ['S256', 'plain'],
+          grant_types_supported: ['authorization_code', 'refresh_token', 'client_credentials'],
+          response_types_supported: ['code', 'token'],
+        });
+      }
+
+      if (url.pathname === '/oauth/token') {
+        tokenCalls.push({
+          url: req.url,
+          authorization: req.headers.get('authorization'),
+          body: await req.text(),
+        });
+        return json({
+          access_token: 'upstream-access-token',
+          refresh_token: 'upstream-refresh-token',
+          token_type: 'Bearer',
+          expires_in: 3600,
+          scope: 'firewalls:read metrics:read',
+        });
+      }
+
+      throw new Error(`unexpected auth0 fixture path ${url.pathname}`);
     }
 
     if (url.hostname !== 'firewall.test') {
@@ -244,11 +288,173 @@ test('serves OAuth protected resource metadata from firewall-ui public config', 
 
   assert.equal(response.status, 200);
   assert.equal(body.resource, 'https://mcp.test/mcp');
-  assert.deepEqual(body.authorization_servers, ['https://tenant.example.auth0.com/']);
+  assert.deepEqual(body.authorization_servers, ['https://mcp.test']);
+  assert.deepEqual(body.silmaril_upstream_authorization_servers, ['https://tenant.example.auth0.com/']);
   assert.equal(body.silmaril_oauth_resource, 'https://silmaril.security/firewall-ui/mcp-test');
   assert.equal(body.silmaril_oauth_client_id, 'public-mcp-client-id');
   assert.ok(body.scopes_supported.includes('firewalls:read'));
   assert.ok(body.scopes_supported.includes('trace:read'));
+});
+
+test('serves OAuth authorization server metadata with local registration bridge', async () => {
+  installMockFetch();
+
+  const response = await handleAuthorizationServerMetadataRequest(
+    new Request('https://mcp.test/.well-known/oauth-authorization-server'),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.issuer, 'https://mcp.test');
+  assert.equal(body.authorization_endpoint, 'https://mcp.test/oauth/authorize');
+  assert.equal(body.token_endpoint, 'https://mcp.test/oauth/token');
+  assert.equal(body.registration_endpoint, 'https://mcp.test/oauth/register');
+  assert.deepEqual(body.response_types_supported, ['code']);
+  assert.ok(body.grant_types_supported.includes('authorization_code'));
+  assert.ok(body.grant_types_supported.includes('refresh_token'));
+  assert.deepEqual(body.token_endpoint_auth_methods_supported, ['none']);
+  assert.ok(body.code_challenge_methods_supported.includes('S256'));
+  assert.ok(body.scopes_supported.includes('findings:detail'));
+});
+
+test('authorization bridge redirects Auth0 back through the fixed MCP callback', async () => {
+  installMockFetch();
+  process.env.MCP_AUTH0_ORGANIZATION = 'org_silmaril';
+
+  const response = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+      state: 'codex-state',
+      scope: 'firewalls:read metrics:read',
+      code_challenge: 'pkce-challenge',
+      code_challenge_method: 'S256',
+    }).toString()),
+    readConfig(),
+  );
+  const location = new URL(response.headers.get('location') ?? '');
+
+  assert.equal(response.status, 302);
+  assert.equal(location.origin, 'https://tenant.example.auth0.com');
+  assert.equal(location.pathname, '/authorize');
+  assert.equal(location.searchParams.get('client_id'), 'public-mcp-client-id');
+  assert.equal(location.searchParams.get('redirect_uri'), 'https://mcp.test/oauth/callback');
+  assert.equal(location.searchParams.get('audience'), 'https://silmaril.security/firewall-ui/mcp-test');
+  assert.equal(location.searchParams.get('code_challenge'), 'pkce-challenge');
+  assert.equal(location.searchParams.get('code_challenge_method'), 'S256');
+  assert.equal(location.searchParams.get('organization'), 'org_silmaril');
+
+  const callback = await handleOAuthCallbackRequest(
+    new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
+      code: 'auth0-code',
+      state: location.searchParams.get('state') ?? '',
+    }).toString()),
+  );
+  const callbackLocation = new URL(callback.headers.get('location') ?? '');
+
+  assert.equal(callback.status, 302);
+  assert.equal(callbackLocation.origin, 'http://127.0.0.1:1455');
+  assert.equal(callbackLocation.pathname, '/oauth/callback');
+  assert.equal(callbackLocation.searchParams.get('code'), 'auth0-code');
+  assert.equal(callbackLocation.searchParams.get('state'), 'codex-state');
+});
+
+test('authorization bridge preserves explicit client organization over default', async () => {
+  installMockFetch();
+  process.env.MCP_AUTH0_ORGANIZATION = 'org_default';
+
+  const response = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+      state: 'codex-state',
+      organization: 'org_explicit',
+    }).toString()),
+    readConfig(),
+  );
+  const location = new URL(response.headers.get('location') ?? '');
+
+  assert.equal(response.status, 302);
+  assert.equal(location.searchParams.get('organization'), 'org_explicit');
+});
+
+test('authorization bridge rejects non-loopback client callbacks', async () => {
+  installMockFetch();
+
+  const response = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'https://attacker.test/callback',
+    }).toString()),
+    readConfig(),
+  );
+
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, 'invalid_request');
+});
+
+test('token bridge exchanges authorization code with fixed MCP callback and PKCE verifier', async () => {
+  installMockFetch();
+
+  const response = await handleTokenRequest(
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: 'public-mcp-client-id',
+        code: 'auth0-code',
+        redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+        code_verifier: 'codex-pkce-verifier',
+      }).toString(),
+    }),
+    readConfig(),
+  );
+  const body = await response.json();
+  const upstreamBody = new URLSearchParams(tokenCalls[0].body ?? '');
+
+  assert.equal(response.status, 200);
+  assert.equal(body.access_token, 'upstream-access-token');
+  assert.equal(tokenCalls.length, 1);
+  assert.equal(tokenCalls[0].authorization, null);
+  assert.equal(upstreamBody.get('grant_type'), 'authorization_code');
+  assert.equal(upstreamBody.get('client_id'), 'public-mcp-client-id');
+  assert.equal(upstreamBody.get('code'), 'auth0-code');
+  assert.equal(upstreamBody.get('redirect_uri'), 'https://mcp.test/oauth/callback');
+  assert.equal(upstreamBody.get('code_verifier'), 'codex-pkce-verifier');
+});
+
+test('dynamic client registration returns configured public OAuth client', async () => {
+  installMockFetch();
+
+  const response = await handleClientRegistrationRequest(
+    new Request('https://mcp.test/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: ['http://127.0.0.1:1455/oauth/callback'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        scope: 'firewalls:read metrics:read',
+        client_name: 'Codex',
+      }),
+    }),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 201);
+  assert.equal(body.client_id, 'public-mcp-client-id');
+  assert.deepEqual(body.redirect_uris, ['http://127.0.0.1:1455/oauth/callback']);
+  assert.deepEqual(body.grant_types, ['authorization_code']);
+  assert.deepEqual(body.response_types, ['code']);
+  assert.equal(body.token_endpoint_auth_method, 'none');
+  assert.equal(body.scope, 'firewalls:read metrics:read');
+  assert.equal(body.client_name, 'Codex');
 });
 
 test('OAuth metadata ignores request-controlled forwarded host headers', async () => {
@@ -411,6 +617,7 @@ test('chunked upstream responses are rejected as soon as they exceed the size ca
         maxResponseBytes: 16,
         auditUrl: null,
         publicBaseUrl: null,
+        auth0Organization: null,
       },
     }),
     (err) =>

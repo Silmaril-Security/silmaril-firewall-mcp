@@ -8,7 +8,7 @@ Tenant-scoped evidence access for Silmaril Firewall from MCP clients.
 codex mcp add silmaril-firewall --url https://firewall-mcp.silmaril.dev/mcp
 ```
 
-When the client connects, it opens Silmaril login. Tenant access follows the organization selected during login.
+When the client connects, hosted OAuth discovery opens Silmaril login. Tenant access follows the organization selected during login.
 
 ## Tools
 

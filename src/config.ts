@@ -1,6 +1,7 @@
 export interface ServerConfig {
   firewallUiBaseUrl: string;
   publicBaseUrl: string | null;
+  auth0Organization: string | null;
   allowedOrigins: string[];
   maxResponseBytes: number;
   auditUrl: string | null;
@@ -47,6 +48,7 @@ export function readConfig(): ServerConfig {
   return {
     firewallUiBaseUrl: requiredUrlEnv('FIREWALL_UI_BASE_URL'),
     publicBaseUrl: optionalBaseUrl(process.env.MCP_PUBLIC_BASE_URL),
+    auth0Organization: process.env.MCP_AUTH0_ORGANIZATION?.trim() || null,
     allowedOrigins: unique([
       ...DEFAULT_ALLOWED_ORIGINS,
       ...splitList(process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS),
