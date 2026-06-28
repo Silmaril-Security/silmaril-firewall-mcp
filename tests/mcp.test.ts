@@ -216,7 +216,7 @@ test('requires bearer auth on MCP requests', async () => {
   assert.match(challenge, /scope="firewalls:read metrics:read findings:read"/);
 });
 
-test('rejects non-local OAuth discovery without a configured public base URL', async () => {
+test('rejects OAuth discovery without a configured public base URL', async () => {
   delete process.env.MCP_PUBLIC_BASE_URL;
 
   const response = await handleMcpRequest(new Request('https://attacker.example/mcp', {

@@ -95,7 +95,7 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
   if (!token) {
     let challenge: string;
     try {
-      challenge = wwwAuthenticateHeader(req, config);
+      challenge = wwwAuthenticateHeader(config);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'MCP OAuth metadata is unavailable.';
       return json(503, 'mcp_oauth_metadata_unavailable', message, origin.origin);

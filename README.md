@@ -28,7 +28,7 @@ MCP_MAX_RESPONSE_BYTES=1000000
 MCP_AUDIT_URL=
 ```
 
-`FIREWALL_UI_BASE_URL` is required. `MCP_PUBLIC_BASE_URL` is required for preview and production deployments so OAuth discovery never trusts request host headers; localhost development may omit it. ChatGPT, ChatGPT legacy, and Codex origins are allowed by default; add browser-hosted clients with `MCP_ADDITIONAL_ALLOWED_ORIGINS`. `MCP_MAX_RESPONSE_BYTES` defaults to 1 MB and is clamped to a 5 MB hard ceiling.
+`FIREWALL_UI_BASE_URL` and `MCP_PUBLIC_BASE_URL` are required deployment-owned values. `MCP_PUBLIC_BASE_URL` is the canonical public MCP origin used for OAuth discovery, so discovery never trusts request host headers. ChatGPT, ChatGPT legacy, and Codex origins are allowed by default; add browser-hosted clients with `MCP_ADDITIONAL_ALLOWED_ORIGINS`. `MCP_MAX_RESPONSE_BYTES` defaults to 1 MB and is clamped to a 5 MB hard ceiling.
 
 Auth0 issuer, MCP resource/audience, scopes, and the public OAuth client ID are discovered from `firewall-ui` at `/api/mcp/v1/config`. Do not configure `AUTH0_MCP_AUDIENCE` in this repo.
 

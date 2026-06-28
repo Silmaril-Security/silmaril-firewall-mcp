@@ -15,25 +15,19 @@ function json(payload: unknown, init?: ResponseInit): Response {
   });
 }
 
-export function publicBaseUrl(req: Request, config: ServerConfig): string {
+export function publicBaseUrl(config: ServerConfig): string {
   if (config.publicBaseUrl) return config.publicBaseUrl;
-
-  const url = new URL(req.url);
-  if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]') {
-    return url.origin;
-  }
-
-  throw new Error('MCP_PUBLIC_BASE_URL is required for OAuth discovery outside localhost.');
+  throw new Error('MCP_PUBLIC_BASE_URL is required for OAuth discovery.');
 }
 
-export function protectedResourceMetadataUrl(req: Request, config: ServerConfig): string {
-  return new URL('/.well-known/oauth-protected-resource/mcp', publicBaseUrl(req, config)).toString();
+export function protectedResourceMetadataUrl(config: ServerConfig): string {
+  return new URL('/.well-known/oauth-protected-resource/mcp', publicBaseUrl(config)).toString();
 }
 
-export function wwwAuthenticateHeader(req: Request, config: ServerConfig): string {
+export function wwwAuthenticateHeader(config: ServerConfig): string {
   return [
     'Bearer',
-    `resource_metadata="${protectedResourceMetadataUrl(req, config)}"`,
+    `resource_metadata="${protectedResourceMetadataUrl(config)}"`,
     `scope="${DEFAULT_AUTHORIZATION_SCOPES.join(' ')}"`,
   ].join(' ');
 }
@@ -44,7 +38,7 @@ export async function handleProtectedResourceMetadataRequest(
 ): Promise<Response> {
   try {
     const upstream = await getFirewallMcpPublicConfig(config);
-    const mcpResource = new URL('/mcp', publicBaseUrl(req, config)).toString();
+    const mcpResource = new URL('/mcp', publicBaseUrl(config)).toString();
 
     return json({
       resource: mcpResource,

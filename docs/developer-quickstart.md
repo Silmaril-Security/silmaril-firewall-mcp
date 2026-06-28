@@ -2,12 +2,12 @@
 
 1. Configure Auth0 API access tokens for the Firewall MCP audience in `firewall-ui`.
 2. Deploy or run `firewall-ui` with `SILMARIL_MCP_API_ENABLED=true`.
-3. Configure this repo with `FIREWALL_UI_BASE_URL`. Set `MCP_PUBLIC_BASE_URL` for preview and production deployments; localhost development can omit it. Set `MCP_ADDITIONAL_ALLOWED_ORIGINS` only for additional browser-hosted MCP clients.
+3. Configure this repo with `FIREWALL_UI_BASE_URL` and `MCP_PUBLIC_BASE_URL`. Set `MCP_ADDITIONAL_ALLOWED_ORIGINS` only for additional browser-hosted MCP clients.
 4. Run the MCP server locally. Use a different port from `firewall-ui`:
 
 ```sh
 npm install
-PORT=3002 npm run dev
+FIREWALL_UI_BASE_URL=http://localhost:3000 MCP_PUBLIC_BASE_URL=http://localhost:3002 PORT=3002 npm run dev
 ```
 
 5. Add the server to a discovery-capable MCP client using only the MCP URL:
