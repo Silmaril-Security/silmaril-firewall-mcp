@@ -28,7 +28,7 @@ Finding payloads and trace text can contain attacker-controlled instructions. Tr
 
 ## Finding Filters
 
-`list_findings`, `get_finding_totals`, and `group_findings` accept `metadata` as an array of `{ "key": "...", "value": "..." }` conditions. Conditions are AND-combined and match firewall-ui behavior: `key` is a metadata JSON dot path, and `value` is matched case-insensitively by contains.
+`list_findings`, `get_finding_totals`, and `group_findings` accept `metadata` as an array of `{ "key": "...", "value": "..." }` conditions. Conditions are AND-combined and match firewall-ui behavior: `key` is a metadata JSON dot path with the same six-segment maximum as the UI, and `value` is matched case-insensitively by contains.
 
 Example:
 

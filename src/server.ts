@@ -15,11 +15,12 @@ const GroupBySchema = z.enum(['hook', 'tool', 'class', 'triage']);
 const FirewalledIdSchema = z.string().min(1).max(256);
 const ReasonSchema = z.string().min(8).max(512);
 const MetadataKeyRe = /^[A-Za-z0-9_.-]+$/;
+const MetadataMaxDepth = 6;
 const MetadataConditionSchema = z.object({
   key: z.string().max(128).refine((value) => {
     const trimmed = value.trim();
-    return Boolean(trimmed) && MetadataKeyRe.test(trimmed) && trimmed.split('.').length <= 6;
-  }, 'Metadata keys may contain letters, numbers, underscore, dot, or hyphen, with at most 6 dot-path segments.'),
+    return Boolean(trimmed) && MetadataKeyRe.test(trimmed) && trimmed.split('.').length <= MetadataMaxDepth;
+  }, 'Metadata keys may contain letters, numbers, underscore, dot, or hyphen, with at most 6 dot-path segments to match firewall-ui.'),
   value: z.string().max(256).refine((value) => value.trim().length > 0, 'Metadata values must be non-empty.'),
 });
 type TriageFilter = z.infer<typeof TriageFilterSchema>;
