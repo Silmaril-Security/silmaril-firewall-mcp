@@ -4,6 +4,7 @@ import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sd
 import { z } from 'zod';
 import { auditDetailAccess } from './audit';
 import { enc, firewallGetJson, pathWithQuery, FirewallApiError } from './firewall-ui-client';
+import type { QueryParams } from './firewall-ui-client';
 import type { ServerConfig } from './config';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
@@ -13,7 +14,17 @@ const TriageFilterSchema = z.enum(['true_positive', 'false_positive', 'triaged',
 const GroupBySchema = z.enum(['hook', 'tool', 'class', 'triage']);
 const FirewalledIdSchema = z.string().min(1).max(256);
 const ReasonSchema = z.string().min(8).max(512);
+const MetadataKeyRe = /^[A-Za-z0-9_.-]+$/;
+const MetadataMaxDepth = 6;
+const MetadataConditionSchema = z.object({
+  key: z.string().max(128).refine((value) => {
+    const trimmed = value.trim();
+    return Boolean(trimmed) && MetadataKeyRe.test(trimmed) && trimmed.split('.').length <= MetadataMaxDepth;
+  }, 'Metadata keys may contain letters, numbers, underscore, dot, or hyphen, with at most 6 dot-path segments to match firewall-ui.'),
+  value: z.string().max(256).refine((value) => value.trim().length > 0, 'Metadata values must be non-empty.'),
+});
 type TriageFilter = z.infer<typeof TriageFilterSchema>;
+type MetadataCondition = z.infer<typeof MetadataConditionSchema>;
 
 interface FindingTotalsPayload {
   blocked?: number | null;
@@ -44,6 +55,27 @@ const triageShape = {
     'Filter by triage verdict/status. Use false_positive for exact false-positive counts, true_positive for confirmed attacks, triaged for all reviewed findings, or untriaged.',
   ),
 };
+
+const metadataShape = {
+  metadata: z.array(MetadataConditionSchema).max(12).optional().describe(
+    'AND-combined metadata JSON filters. Each key is a dot path such as stage or silmaril.request_id; each value is matched case-insensitively by contains, matching the firewall-ui metadata filter behavior.',
+  ),
+};
+
+function metadataQueryValues(metadata: MetadataCondition[] | undefined): string[] | undefined {
+  if (!metadata?.length) return undefined;
+  return metadata.map((condition) => `${condition.key.trim()}=${condition.value.trim()}`);
+}
+
+function findingQueryParams(
+  args: Record<string, unknown> & { metadata?: MetadataCondition[] },
+): QueryParams {
+  const { metadata, ...rest } = args;
+  return {
+    ...(rest as QueryParams),
+    meta: metadataQueryValues(metadata),
+  };
+}
 
 function token(extra: Extra): string {
   const value = extra.authInfo?.token;
@@ -148,6 +180,7 @@ async function callTriageFindingGroups(
     range?: string;
     startTime?: string;
     endTime?: string;
+    metadata?: MetadataCondition[];
   },
   extra: Extra,
   config: ServerConfig,
@@ -160,12 +193,13 @@ async function callTriageFindingGroups(
     const bearer = token(extra);
     const items = await Promise.all(buckets.map(async (triage) => {
       const payload = await firewallGetJson<FindingTotalsPayload>({
-        path: pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewallId)}/findings/totals`, {
+        path: pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewallId)}/findings/totals`, findingQueryParams({
           range: args.range,
           startTime: args.startTime,
           endTime: args.endTime,
+          metadata: args.metadata,
           triage,
-        }),
+        })),
         token: bearer,
         config,
         signal: extra.signal,
@@ -247,6 +281,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
       hook: z.string().max(128).optional(),
       toolName: z.string().max(256).optional(),
       ...triageShape,
+      ...metadataShape,
       sort: z.enum(['time', 'score', 'triage', 'severity']).optional(),
       dir: z.enum(['asc', 'desc']).optional(),
       cursor: z.string().max(1024).optional(),
@@ -255,7 +290,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     },
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, ...args }, extra) =>
-    callFirewall('list_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings`, args), extra, config));
+    callFirewall('list_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings`, findingQueryParams(args)), extra, config));
 
   server.registerTool('get_finding_totals', {
     title: 'Get Finding Totals',
@@ -263,16 +298,18 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     inputSchema: {
       firewall_id: FirewalledIdSchema,
       ...triageShape,
+      ...metadataShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, triage, range, startTime, endTime }, extra) =>
-    callFirewall('get_finding_totals', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/totals`, {
+  }, async ({ firewall_id, triage, metadata, range, startTime, endTime }, extra) =>
+    callFirewall('get_finding_totals', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/totals`, findingQueryParams({
       range,
       startTime,
       endTime,
       triage,
-    }), extra, config));
+      metadata,
+    })), extra, config));
 
   server.registerTool('group_findings', {
     title: 'Group Findings',
@@ -281,20 +318,22 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
       firewall_id: FirewalledIdSchema,
       by: GroupBySchema,
       ...triageShape,
+      ...metadataShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, by, triage, range, startTime, endTime }, extra) => {
+  }, async ({ firewall_id, by, triage, metadata, range, startTime, endTime }, extra) => {
     if (by === 'triage') {
-      return callTriageFindingGroups(firewall_id, { triage, range, startTime, endTime }, extra, config);
+      return callTriageFindingGroups(firewall_id, { triage, metadata, range, startTime, endTime }, extra, config);
     }
-    return callFirewall('group_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/group`, {
+    return callFirewall('group_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/group`, findingQueryParams({
       by,
       range,
       startTime,
       endTime,
       triage,
-    }), extra, config);
+      metadata,
+    })), extra, config);
   });
 
   server.registerTool('get_investigation_packet', {

@@ -93,13 +93,29 @@ export async function firewallGetJson<T>({
   return parsed as T;
 }
 
-export function pathWithQuery(path: string, params: Record<string, string | number | boolean | null | undefined>): string {
+type QueryPrimitive = string | number | boolean;
+type QueryValue = QueryPrimitive | null | undefined;
+
+export type QueryParams = Record<string, QueryValue | readonly QueryValue[]>;
+
+export function pathWithQuery(path: string, params: QueryParams): string {
   const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
+  const append = (key: string, value: QueryValue) => {
     if (value !== undefined && value !== null && value !== '') {
-      search.set(key, String(value));
+      search.append(key, String(value));
+    }
+  };
+
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        append(key, item);
+      }
+    } else {
+      append(key, value as QueryValue);
     }
   }
+
   const query = search.toString();
   return query ? `${path}?${query}` : path;
 }
