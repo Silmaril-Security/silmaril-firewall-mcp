@@ -10,7 +10,8 @@
 - The MCP route rejects disallowed `Origin` headers before MCP message handling.
 - The MCP server forwards user access tokens only to the configured `FIREWALL_UI_BASE_URL`.
 - The MCP server discovers issuer, audience/resource, scopes, and public OAuth client ID from `firewall-ui` `/api/mcp/v1/config`.
-- The OAuth bridge sends the configured default Auth0 organization when the client does not supply one.
+- The OAuth bridge sends no Auth0 organization parameter for shared hosted deployments, allowing Auth0 Universal Login to prompt for or discover the organization.
+- The OAuth bridge sends `MCP_AUTH0_ORGANIZATION` only for explicit single-org deployments and rejects non-`org_...` organization values locally.
 - `firewall-ui` rejects wrong issuer, wrong audience, expiry, missing org, missing tenant, missing admin claim, and missing scopes.
 - Cross-tenant resource probes are re-scoped through `firewall-ui` deployment lookup and return deterministic `404`.
 

@@ -385,7 +385,6 @@ test('serves OAuth authorization server metadata with local registration bridge'
 
 test('authorization bridge redirects Auth0 back through the fixed MCP callback', async () => {
   installMockFetch();
-  process.env.MCP_AUTH0_ORGANIZATION = 'org_silmaril';
 
   const response = await handleAuthorizationRequest(
     new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
@@ -409,7 +408,7 @@ test('authorization bridge redirects Auth0 back through the fixed MCP callback',
   assert.equal(location.searchParams.get('audience'), 'https://silmaril.security/firewall-ui/mcp-test');
   assert.equal(location.searchParams.get('code_challenge'), 'pkce-challenge');
   assert.equal(location.searchParams.get('code_challenge_method'), 'S256');
-  assert.equal(location.searchParams.get('organization'), 'org_silmaril');
+  assert.equal(location.searchParams.get('organization'), null);
 
   const callback = await handleOAuthCallbackRequest(
     new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
@@ -426,6 +425,28 @@ test('authorization bridge redirects Auth0 back through the fixed MCP callback',
   assert.ok(callbackLocation.searchParams.get('code'));
   assert.notEqual(callbackLocation.searchParams.get('code'), 'auth0-code');
   assert.equal(callbackLocation.searchParams.get('state'), 'codex-state');
+});
+
+test('authorization bridge applies explicit single-org deployment override', async () => {
+  installMockFetch();
+  process.env.MCP_AUTH0_ORGANIZATION = 'org_silmaril';
+
+  const response = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+      state: 'codex-state',
+      scope: 'firewalls:read metrics:read',
+      code_challenge: 'pkce-challenge',
+      code_challenge_method: 'S256',
+    }).toString()),
+    readConfig(),
+  );
+  const location = new URL(response.headers.get('location') ?? '');
+
+  assert.equal(response.status, 302);
+  assert.equal(location.searchParams.get('organization'), 'org_silmaril');
 });
 
 test('authorization bridge rejects forged callback state', async () => {
@@ -453,7 +474,7 @@ test('authorization bridge rejects forged callback state', async () => {
   assert.equal((await response.json()).error_description, 'Invalid OAuth bridge state.');
 });
 
-test('authorization bridge preserves explicit client organization over default', async () => {
+test('authorization bridge preserves explicit client Auth0 organization over default', async () => {
   installMockFetch();
   process.env.MCP_AUTH0_ORGANIZATION = 'org_default';
 
@@ -463,7 +484,7 @@ test('authorization bridge preserves explicit client organization over default',
       client_id: 'public-mcp-client-id',
       redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
       state: 'codex-state',
-      organization: 'org_explicit',
+      organization: 'org_clickup',
       code_challenge: 'pkce-challenge',
       code_challenge_method: 'S256',
     }).toString()),
@@ -472,7 +493,51 @@ test('authorization bridge preserves explicit client organization over default',
   const location = new URL(response.headers.get('location') ?? '');
 
   assert.equal(response.status, 302);
-  assert.equal(location.searchParams.get('organization'), 'org_explicit');
+  assert.equal(location.searchParams.get('organization'), 'org_clickup');
+});
+
+test('authorization bridge rejects non-Auth0 organization values locally', async () => {
+  installMockFetch();
+
+  const response = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+      state: 'codex-state',
+      organization: 'clickup',
+      code_challenge: 'pkce-challenge',
+      code_challenge_method: 'S256',
+    }).toString()),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, 'invalid_request');
+  assert.match(body.error_description, /organization must be an Auth0 organization id/);
+});
+
+test('authorization bridge rejects invalid single-org deployment override locally', async () => {
+  installMockFetch();
+  process.env.MCP_AUTH0_ORGANIZATION = 'clickup';
+
+  const response = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: 'public-mcp-client-id',
+      redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+      state: 'codex-state',
+      code_challenge: 'pkce-challenge',
+      code_challenge_method: 'S256',
+    }).toString()),
+    readConfig(),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(body.error, 'server_error');
+  assert.match(body.error_description, /MCP_AUTH0_ORGANIZATION must be an Auth0 organization id/);
 });
 
 test('authorization bridge rejects non-loopback client callbacks', async () => {
