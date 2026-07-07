@@ -333,8 +333,8 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     ].join(' '),
     inputSchema: {
       firewall_id: FirewalledIdSchema,
-      categories: z.array(AbuseCategorySchema).max(8).optional().describe(
-        'Optional derived abuse categories. Use model_distillation and nsfw_content_abuse separately when investigating ClickUp attack campaigns.',
+      categories: z.array(AbuseCategorySchema).min(1).max(8).optional().describe(
+        'Optional derived abuse categories. Use model_distillation and nsfw_content_abuse separately when separating distillation and NSFW abuse campaigns.',
       ),
       minFindings: z.number().int().min(1).max(100).optional().describe('Minimum suspicious findings required for a user. Defaults to firewall-ui.'),
       limit: z.number().int().min(1).max(100).optional().describe('Maximum ranked users returned. Defaults to firewall-ui page size.'),

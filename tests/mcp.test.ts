@@ -1144,6 +1144,24 @@ test('list_suspicious_users forwards category filters and preserves correlation 
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
 });
 
+test('list_suspicious_users rejects empty category arrays', async () => {
+  const { client } = await connectedClient();
+
+  const result = await client.callTool({
+    name: 'list_suspicious_users',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      categories: [],
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(
+    upstreamCalls.some((call) => new URL(call.url).pathname.endsWith('/findings/users/suspicious')),
+    false,
+  );
+});
+
 test('group_findings can aggregate exact counts by triage verdict', async () => {
   const { client } = await connectedClient();
   const metadata = [{ key: 'stage', value: 'prod' }];
