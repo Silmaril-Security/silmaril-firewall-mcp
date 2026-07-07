@@ -14,6 +14,16 @@ const TriageFilterSchema = z.enum(['true_positive', 'false_positive', 'triaged',
 const GroupBySchema = z.enum(['hook', 'tool', 'class', 'triage']);
 const FirewalledIdSchema = z.string().min(1).max(256);
 const ReasonSchema = z.string().min(8).max(512);
+const AbuseCategorySchema = z.enum([
+  'ai_control_abuse',
+  'data_exfiltration',
+  'secret_or_prompt_theft',
+  'system_or_account_compromise',
+  'service_disruption_or_cost_abuse',
+  'nsfw_content_abuse',
+  'model_distillation',
+  'other_harmful_attempt',
+]);
 const MetadataKeyRe = /^[A-Za-z0-9_.-]+$/;
 const MetadataMaxDepth = 6;
 const MetadataConditionSchema = z.object({
@@ -25,6 +35,7 @@ const MetadataConditionSchema = z.object({
 });
 type TriageFilter = z.infer<typeof TriageFilterSchema>;
 type MetadataCondition = z.infer<typeof MetadataConditionSchema>;
+type AbuseCategory = z.infer<typeof AbuseCategorySchema>;
 
 interface FindingTotalsPayload {
   blocked?: number | null;
@@ -74,6 +85,19 @@ function findingQueryParams(
   return {
     ...(rest as QueryParams),
     meta: metadataQueryValues(metadata),
+  };
+}
+
+function suspiciousUsersQueryParams(
+  args: Record<string, unknown> & {
+    categories?: AbuseCategory[];
+    metadata?: MetadataCondition[];
+  },
+): QueryParams {
+  const { categories, ...rest } = findingQueryParams(args);
+  return {
+    ...rest,
+    category: categories,
   };
 }
 
@@ -256,6 +280,14 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
   }, async ({ firewall_id }, extra) =>
     callFirewall('get_firewall', `/api/mcp/v1/firewalls/${enc(firewall_id)}`, extra, config));
 
+  server.registerTool('get_schema', {
+    title: 'Get MCP Schema',
+    description: 'Read the firewall-ui MCP schema, including scopes, limits, time ranges, and suspicious-users defaults.',
+    inputSchema: {},
+    annotations: readOnlyAnnotations,
+  }, async (_args, extra) =>
+    callFirewall('get_schema', '/api/mcp/v1/schema', extra, config));
+
   server.registerTool('get_metrics', {
     title: 'Get Metrics',
     description: 'Read bounded operational metrics for one authorized firewall. Supports SageMaker and self-hosted operations sources.',
@@ -291,6 +323,36 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, ...args }, extra) =>
     callFirewall('list_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings`, findingQueryParams(args)), extra, config));
+
+  server.registerTool('list_suspicious_users', {
+    title: 'List Suspicious Users',
+    description: [
+      'Rank suspicious users from true-positive abuse evidence for one firewall.',
+      'Returns derived abuse categories, account-farming correlation signals, minimized evidence handles, and diagnostics.',
+      'Account-farming signals only prioritize users and do not create alerts without abuse evidence.',
+    ].join(' '),
+    inputSchema: {
+      firewall_id: FirewalledIdSchema,
+      categories: z.array(AbuseCategorySchema).max(8).optional().describe(
+        'Optional derived abuse categories. Use model_distillation and nsfw_content_abuse separately when investigating ClickUp attack campaigns.',
+      ),
+      minFindings: z.number().int().min(1).max(100).optional().describe('Minimum suspicious findings required for a user. Defaults to firewall-ui.'),
+      limit: z.number().int().min(1).max(100).optional().describe('Maximum ranked users returned. Defaults to firewall-ui page size.'),
+      candidateLimit: z.number().int().min(100).max(5000).optional().describe('Maximum suspicious findings scanned in the requested window.'),
+      lookbackCandidateLimit: z.number().int().min(100).max(5000).optional().describe('Maximum suspicious findings scanned in the 30d lookback used for first-seen and reuse signals.'),
+      q: z.string().max(512).optional(),
+      minScore: z.number().min(0).max(1).optional(),
+      hook: z.string().max(128).optional(),
+      toolName: z.string().max(256).optional(),
+      ...metadataShape,
+      ...windowShape,
+    },
+    annotations: readOnlyAnnotations,
+  }, async ({ firewall_id, ...args }, extra) =>
+    callFirewall('list_suspicious_users', pathWithQuery(
+      `/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/users/suspicious`,
+      suspiciousUsersQueryParams(args),
+    ), extra, config));
 
   server.registerTool('get_finding_totals', {
     title: 'Get Finding Totals',

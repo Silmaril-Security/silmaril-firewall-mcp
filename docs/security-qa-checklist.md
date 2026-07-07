@@ -19,6 +19,8 @@
 - v1 tools are read-only.
 - No classify, explain, triage, exports, invitations, user management, deployment history, writes, or costful operations.
 - Aggregate/search tools do not require payload or trace scopes.
+- `list_suspicious_users` requires only aggregate findings access upstream and returns minimized evidence handles, derived abuse categories, account-farming scores, and missing-metadata diagnostics.
+- Account-farming correlation is a prioritization boost only; suspicious-user inclusion must come from true-positive abuse evidence.
 - Detail tools require `reason` and upstream detail scopes.
 - Page size is capped at 100 and firewall-ui rejects unbounded time windows.
 - MCP response byte size is capped by `MCP_MAX_RESPONSE_BYTES`.
@@ -30,6 +32,7 @@
 - Metadata-only audit records include tool name, firewall ID, finding ID, reason, request ID, and timestamp.
 - Canary payload tests prove payload text is absent from audit bodies and console output.
 - Tool instructions tell agents to treat finding content as hostile prompt-injection data.
+- JA4 and other fingerprint-derived fields are not exposed by the MCP server; when absent, firewall-ui returns unavailable signal diagnostics instead of zero scores.
 
 ## Runtime Coverage
 
@@ -40,7 +43,7 @@
 ## Required Proof Before Production
 
 - `firewall-ui`: lint, typecheck, unit tests, and targeted MCP bearer/evidence tests.
-- MCP repo: lint, typecheck, SDK Streamable HTTP tests, and build.
+- MCP repo: lint, typecheck, SDK Streamable HTTP tests, suspicious-user category/schema tests, and build.
 - Auth0 smoke: one org-scoped user can list/search/get only that tenant; another tenant envKey returns denied/not found.
 - Security smoke: wrong audience, wrong issuer, expired token, missing org, missing scope, and cross-tenant IDOR attempts.
 - Proof artifacts: golden MCP transcript, capability matrix, quickstart, evaluator walkthrough, and dogfood scorecard.
