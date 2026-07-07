@@ -20,8 +20,9 @@
 - v1 tools are read-only.
 - No classify, explain, triage, exports, invitations, user management, deployment history, writes, or costful operations.
 - Aggregate/search tools do not require payload or trace scopes.
-- `list_suspicious_users` requires only aggregate findings access upstream and returns minimized evidence handles, derived abuse categories, account-farming scores, and missing-metadata diagnostics.
-- Account-farming correlation is a prioritization boost only; suspicious-user inclusion must come from true-positive abuse evidence.
+- `list_suspicious_users` requires only aggregate findings access upstream and returns minimized evidence handles, derived abuse categories, bot-farming scores, and missing-metadata diagnostics.
+- Bot-farming correlation is a prioritization boost only; suspicious-user inclusion must come from true-positive abuse evidence.
+- Suspicious-user score fields use explicit 0-100 percentage names such as `suspicious_score_percent`, `bot_farming.score_percent`, and `bot_farming.signals.*.score_percent`.
 - Detail tools require `reason` and upstream detail scopes.
 - Page size is capped at 100 and firewall-ui rejects unbounded time windows.
 - MCP response byte size is capped by `MCP_MAX_RESPONSE_BYTES`.

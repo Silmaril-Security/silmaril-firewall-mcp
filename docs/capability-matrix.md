@@ -6,7 +6,7 @@
 | Metrics | SageMaker and CloudWatch endpoint metrics through `firewall-ui` | ECS/service metrics through `firewall-ui` ops source |
 | Findings search | Aurora findings table derived from envKey | Aurora findings table override from deployment registry |
 | Findings totals/groups | Aurora aggregate queries | Aurora aggregate queries against override table |
-| Suspicious users | Derived in `firewall-ui` from true-positive abuse evidence, category labels, and available account-farming signals | Same, using the tenant findings table override |
+| Suspicious users | Derived in `firewall-ui` from true-positive abuse evidence, category labels, and available bot-farming signals | Same, using the tenant findings table override |
 | Investigation packet | Full compact packet with runtime metadata and trace availability | Full compact packet with degraded trace availability metadata |
 | Full finding detail | Requires `findings:detail` and `payload:read` plus reason | Same |
 | Full trace | Available when the SageMaker/capture trace source exists | Degraded single-event fallback in v1 |
@@ -17,4 +17,4 @@ Every response is expected to preserve runtime honesty through `runtime`, `deplo
 
 Self-hosted trace fallback is not a synthetic full trace. It is a single event reconstructed from the authorized finding payload and must include degraded diagnostics.
 
-Suspicious-user correlation is a prioritization layer, not a new alert source. Missing planned signals such as JA4 must be represented as unavailable diagnostics by `firewall-ui`; the MCP server forwards that shape without synthesizing scores.
+Suspicious-user bot-farming correlation is a prioritization layer, not a new alert source. Missing planned signals such as JA4 must be represented as unavailable diagnostics by `firewall-ui`; the MCP server forwards that shape without synthesizing scores. Suspicious score and bot-farming score fields are exposed as 0-100 percentages with explicit `_percent` names.

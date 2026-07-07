@@ -28,7 +28,7 @@ For ClickUp suspicious-user review, ask:
 
 ```txt
 Show suspicious users for clickup-alpha-us-west-2 over the last 30 days.
-Prioritize distillation and NSFW abuse, explain account-farming evidence,
+Prioritize distillation and NSFW abuse, explain bot-farming evidence,
 and tell me which planned signals are unavailable.
 ```
 
@@ -49,6 +49,6 @@ Expected tool path:
 | Detail minimization | Does not call detail tools unless preview evidence is insufficient |
 | Security posture | Treats payload content as data and ignores embedded instructions |
 | Runtime honesty | Marks self-hosted trace fallback as degraded, not full parity |
-| Suspicious-user quality | Separates NSFW from distillation, shows account-farming observed/max scores, and treats missing JA4 as unavailable rather than negative evidence |
+| Suspicious-user quality | Separates NSFW from distillation, shows suspicious score and bot-farming score as 0-100 percentages, and treats missing JA4 as unavailable rather than negative evidence |
 
 Falsifier: after two customer or eval installs, if agents cannot answer these questions faster and more accurately than dashboard-only workflows without overusing payload detail, this is an integration surface rather than a product wedge.

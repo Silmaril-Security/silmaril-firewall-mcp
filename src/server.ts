@@ -328,8 +328,8 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     title: 'List Suspicious Users',
     description: [
       'Rank suspicious users from true-positive abuse evidence for one firewall.',
-      'Returns derived abuse categories, account-farming correlation signals, minimized evidence handles, and diagnostics.',
-      'Account-farming signals only prioritize users and do not create alerts without abuse evidence.',
+      'Returns derived abuse categories, bot-farming correlation signals, minimized evidence handles, and diagnostics.',
+      'Bot-farming signals only prioritize users and do not create alerts without abuse evidence.',
     ].join(' '),
     inputSchema: {
       firewall_id: FirewalledIdSchema,

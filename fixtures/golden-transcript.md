@@ -51,11 +51,15 @@ server -> structuredContent.users[0]:
   primary_abuse_category: model_distillation
   abuse_category_counts.model_distillation: <count>
   abuse_category_counts.nsfw_content_abuse: <count>
+  suspicious_score_percent: <0-100 user priority score>
+  top_finding_score_percent: <0-100 highest finding score>
   findings.suspicious: <count>
-  account_farming.observed_score: <available-signal score>
-  account_farming.max_possible_score: <all-planned-signal score>
-  account_farming.signals.shared_ja4_fingerprint.available: false
+  bot_farming.score_percent: <0-100 available-signal score>
+  bot_farming.max_possible_score_percent: <0-100 all-planned-signal score>
+  bot_farming.signals.shared_ja4_fingerprint.available: false
+  bot_farming.signals.shared_ja4_fingerprint.score_percent: null
   evidence_handles[0].evidence_id: <firewall_id>:<finding_id>
+  evidence_handles[0].finding_score_percent: <0-100 finding score>
 
 client -> tools/call get_finding {
   firewall_id: "yc-prod-us-west-2",

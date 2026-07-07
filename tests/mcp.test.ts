@@ -182,6 +182,17 @@ function installMockFetch() {
             'runtime_identity_reuse',
             'shared_ja4_fingerprint',
           ],
+          score_fields: {
+            suspicious_score_percent: '0-100 user priority score.',
+            top_finding_score_percent: '0-100 highest underlying firewall finding score.',
+            bot_farming: {
+              score_percent: '0-100 observed bot-farming correlation score.',
+              max_possible_score_percent: '0-100 score ceiling with unavailable planned signals.',
+              signals: {
+                score_percent: '0-100 per-signal score, or null when unavailable.',
+              },
+            },
+          },
           defaults: {
             range: '1d',
             min_findings: 2,
@@ -249,7 +260,7 @@ function installMockFetch() {
           risk_class_counts: {
             control_abuse: 2,
           },
-          suspicious_score: 84,
+          suspicious_score_percent: 84,
           findings: { suspicious: 2 },
           conversations: {
             suspicious: 2,
@@ -257,13 +268,14 @@ function installMockFetch() {
             observed_malicious_percent: 100,
             all_ai_conversation_percent: null,
           },
-          account_farming: {
-            observed_score: 42,
-            max_possible_score: 72,
+          top_finding_score_percent: 91,
+          bot_farming: {
+            score_percent: 42,
+            max_possible_score_percent: 72,
             signals: {
               new_user_burst: {
                 available: true,
-                score: 20,
+                score_percent: 20,
                 level: 'strong',
                 metrics: { first_seen_users: 3 },
                 evidence: ['3 first-seen users share workspace/category/signature'],
@@ -271,7 +283,7 @@ function installMockFetch() {
               },
               workspace_churn: {
                 available: true,
-                score: 10,
+                score_percent: 10,
                 level: 'moderate',
                 metrics: { distinct_suspicious_users_in_workspace_category: 3 },
                 evidence: ['3 suspicious users share workspace/category'],
@@ -279,7 +291,7 @@ function installMockFetch() {
               },
               limit_burn_proxy: {
                 available: true,
-                score: 12,
+                score_percent: 12,
                 level: 'moderate',
                 metrics: { suspicious_conversations: 2 },
                 evidence: ['multiple suspicious conversations'],
@@ -287,7 +299,7 @@ function installMockFetch() {
               },
               prompt_campaign_reuse: {
                 available: true,
-                score: 0,
+                score_percent: 0,
                 level: 'none',
                 metrics: {},
                 evidence: [],
@@ -295,7 +307,7 @@ function installMockFetch() {
               },
               runtime_identity_reuse: {
                 available: false,
-                score: null,
+                score_percent: null,
                 level: 'unavailable',
                 metrics: { reason: 'runtime_identity_unavailable' },
                 evidence: [],
@@ -303,7 +315,7 @@ function installMockFetch() {
               },
               shared_ja4_fingerprint: {
                 available: false,
-                score: null,
+                score_percent: null,
                 level: 'unavailable',
                 metrics: { reason: 'ja4_unavailable' },
                 evidence: [],
@@ -316,6 +328,7 @@ function installMockFetch() {
             evidence_id: 'yc-prod-us-west-2:qa-risk-find-001',
             finding_id: 'qa-risk-find-001',
             firewall_id: 'yc-prod-us-west-2',
+            finding_score_percent: 91,
           }],
         }],
         diagnostics: {
@@ -460,6 +473,15 @@ test('get_schema exposes suspicious-users contract through MCP', async () => {
       scopes: string[];
       abuse_categories: string[];
       correlation_signals: string[];
+      score_fields: {
+        suspicious_score_percent: string;
+        top_finding_score_percent: string;
+        bot_farming: {
+          score_percent: string;
+          max_possible_score_percent: string;
+          signals: { score_percent: string };
+        };
+      };
       defaults: { candidate_limit: number; lookback_candidate_limit: number };
     };
   };
@@ -468,6 +490,11 @@ test('get_schema exposes suspicious-users contract through MCP', async () => {
   assert.ok(body.suspicious_users.abuse_categories.includes('nsfw_content_abuse'));
   assert.ok(body.suspicious_users.abuse_categories.includes('model_distillation'));
   assert.ok(body.suspicious_users.correlation_signals.includes('shared_ja4_fingerprint'));
+  assert.match(body.suspicious_users.score_fields.suspicious_score_percent, /0-100/);
+  assert.match(body.suspicious_users.score_fields.top_finding_score_percent, /0-100/);
+  assert.match(body.suspicious_users.score_fields.bot_farming.score_percent, /bot-farming/);
+  assert.match(body.suspicious_users.score_fields.bot_farming.max_possible_score_percent, /ceiling/);
+  assert.match(body.suspicious_users.score_fields.bot_farming.signals.score_percent, /per-signal/);
   assert.equal(body.suspicious_users.defaults.candidate_limit, 2000);
   assert.equal(body.suspicious_users.defaults.lookback_candidate_limit, 5000);
 
@@ -1171,12 +1198,17 @@ test('list_suspicious_users forwards category filters and preserves correlation 
       primary_abuse_category: string;
       abuse_category_counts: Record<string, number>;
       findings: { suspicious: number; true_positive?: number };
-      account_farming: {
-        observed_score: number;
-        max_possible_score: number;
-        signals: Record<string, { available: boolean; score: number | null; level: string }>;
+      suspicious_score_percent: number;
+      top_finding_score_percent: number;
+      account_farming?: unknown;
+      suspicious_score?: unknown;
+      top_score?: unknown;
+      bot_farming: {
+        score_percent: number;
+        max_possible_score_percent: number;
+        signals: Record<string, { available: boolean; score?: number | null; score_percent: number | null; level: string }>;
       };
-      evidence_handles: Array<{ evidence_id: string }>;
+      evidence_handles: Array<{ evidence_id: string; score?: number; finding_score_percent: number }>;
     }>;
     diagnostics: { missing_identity_counts: Record<string, number> };
     received_category: string[];
@@ -1187,14 +1219,22 @@ test('list_suspicious_users forwards category filters and preserves correlation 
   assert.equal(body.users[0].user_id_kind, 'metadata.userId');
   assert.equal(body.users[0].primary_abuse_category, 'model_distillation');
   assert.equal(body.users[0].abuse_category_counts.nsfw_content_abuse, 1);
+  assert.equal(body.users[0].suspicious_score_percent, 84);
+  assert.equal(body.users[0].top_finding_score_percent, 91);
+  assert.equal(body.users[0].suspicious_score, undefined);
+  assert.equal(body.users[0].top_score, undefined);
+  assert.equal(body.users[0].account_farming, undefined);
   assert.equal(body.users[0].findings.suspicious, 2);
   assert.equal(body.users[0].findings.true_positive, undefined);
-  assert.equal(body.users[0].account_farming.signals.shared_ja4_fingerprint.available, false);
-  assert.equal(body.users[0].account_farming.signals.shared_ja4_fingerprint.score, null);
-  assert.equal(body.users[0].account_farming.signals.shared_ja4_fingerprint.level, 'unavailable');
-  assert.ok(body.users[0].account_farming.observed_score < body.users[0].account_farming.max_possible_score);
+  assert.equal(body.users[0].bot_farming.signals.shared_ja4_fingerprint.available, false);
+  assert.equal(body.users[0].bot_farming.signals.shared_ja4_fingerprint.score, undefined);
+  assert.equal(body.users[0].bot_farming.signals.shared_ja4_fingerprint.score_percent, null);
+  assert.equal(body.users[0].bot_farming.signals.shared_ja4_fingerprint.level, 'unavailable');
+  assert.ok(body.users[0].bot_farming.score_percent < body.users[0].bot_farming.max_possible_score_percent);
   assert.equal(body.diagnostics.missing_identity_counts.ja4, 2);
   assert.equal(body.users[0].evidence_handles[0].evidence_id, 'yc-prod-us-west-2:qa-risk-find-001');
+  assert.equal(body.users[0].evidence_handles[0].score, undefined);
+  assert.equal(body.users[0].evidence_handles[0].finding_score_percent, 91);
   assert.deepEqual(body.received_category, ['model_distillation', 'nsfw_content_abuse']);
 
   const lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
