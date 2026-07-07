@@ -234,6 +234,35 @@ function appendIfPresent(target: URLSearchParams, source: URLSearchParams, name:
   if (value) target.set(name, value);
 }
 
+function resolveAuth0Organization(
+  value: string | null,
+  config: ServerConfig,
+): { ok: true; organization: string | null } | { ok: false; response: Response } {
+  const requested = value?.trim();
+  if (!requested) {
+    if (!config.auth0Organization) return { ok: true, organization: null };
+    if (config.auth0Organization.startsWith('org_')) return { ok: true, organization: config.auth0Organization };
+
+    return {
+      ok: false,
+      response: json({
+        error: 'server_error',
+        error_description: 'MCP_AUTH0_ORGANIZATION must be an Auth0 organization id.',
+      }, { status: 503 }),
+    };
+  }
+
+  if (requested.startsWith('org_')) return { ok: true, organization: requested };
+
+  return {
+    ok: false,
+    response: json({
+      error: 'invalid_request',
+      error_description: 'organization must be an Auth0 organization id.',
+    }, { status: 400 }),
+  };
+}
+
 async function fetchUpstreamAuthorizationServerMetadata(
   upstream: FirewallMcpPublicConfig,
   signal?: AbortSignal,
@@ -394,8 +423,11 @@ export async function handleAuthorizationRequest(
     appendIfPresent(authorizationUrl.searchParams, url.searchParams, 'code_challenge_method');
     appendIfPresent(authorizationUrl.searchParams, url.searchParams, 'prompt');
     appendIfPresent(authorizationUrl.searchParams, url.searchParams, 'login_hint');
-    const organization = url.searchParams.get('organization') || config.auth0Organization;
-    if (organization) authorizationUrl.searchParams.set('organization', organization);
+    const resolvedOrganization = resolveAuth0Organization(url.searchParams.get('organization'), config);
+    if (!resolvedOrganization.ok) return resolvedOrganization.response;
+    if (resolvedOrganization.organization) {
+      authorizationUrl.searchParams.set('organization', resolvedOrganization.organization);
+    }
 
     return redirect(authorizationUrl);
   } catch (err) {
