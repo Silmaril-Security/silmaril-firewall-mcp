@@ -1,5 +1,7 @@
 # Developer Quickstart
 
+This page is for Silmaril operators who deploy or run the MCP server. Customer setup is hosted and URL-only; start with the [README](../README.md) and [customer guide](customer-guide.md) instead.
+
 1. Configure the Firewall MCP audience and public OAuth client in `firewall-ui`.
 2. Deploy or run `firewall-ui` with `SILMARIL_MCP_API_ENABLED=true`.
 3. Configure this repo with `FIREWALL_UI_BASE_URL`, `MCP_PUBLIC_BASE_URL`, and `MCP_OAUTH_STATE_SECRET`. Set `MCP_AUTH0_ORGANIZATION` only for an explicit single-org deployment; shared hosted deployments should leave it unset so Auth0 Universal Login can prompt for or discover the user's organization. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery. `MCP_OAUTH_STATE_SECRET` signs hosted OAuth bridge state and must be a high-entropy secret.
