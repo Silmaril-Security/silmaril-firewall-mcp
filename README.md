@@ -17,7 +17,7 @@ When the client connects, hosted OAuth discovery opens Silmaril login. Tenant ac
 - `get_schema` - inspect MCP scopes, limits, time ranges, and suspicious-user defaults.
 - `get_metrics` - read bounded invocation, error, and latency metrics.
 - `list_findings` - search findings with compact previews, triage filters, metadata filters, and pagination.
-- `list_suspicious_users` - rank suspicious users from true-positive abuse evidence with derived abuse categories, account-farming correlation signals, minimized evidence handles, and diagnostics.
+- `list_suspicious_users` - rank suspicious users from true-positive abuse evidence with derived abuse categories, bot-farming correlation signals, minimized evidence handles, and diagnostics.
 - `get_finding_totals` - summarize finding totals for a bounded time window. Use `triage=false_positive` for exact false-positive counts.
 - `group_findings` - aggregate findings by hook, tool, class, or triage verdict.
 - `get_investigation_packet` - gather a compact evidence packet for one finding.
@@ -32,7 +32,7 @@ Finding payloads and trace text can contain attacker-controlled instructions. Tr
 
 `list_findings`, `get_finding_totals`, and `group_findings` accept `metadata` as an array of `{ "key": "...", "value": "..." }` conditions. Conditions are AND-combined and match firewall-ui behavior: `key` is a metadata JSON dot path with the same six-segment maximum as the UI, and `value` is matched case-insensitively by contains.
 
-`list_suspicious_users` accepts the same bounded time window fields plus optional `categories`, `minFindings`, `limit`, `candidateLimit`, and `lookbackCandidateLimit`. Use `categories: ["model_distillation"]` or `categories: ["nsfw_content_abuse"]` when separating ClickUp distillation and NSFW abuse campaigns. Missing future signals such as JA4 are returned as unavailable diagnostics by firewall-ui, not treated as zero-scored evidence.
+`list_suspicious_users` accepts the same bounded time window fields plus optional `categories`, `minFindings`, `limit`, `candidateLimit`, and `lookbackCandidateLimit`. Use `categories: ["model_distillation"]` or `categories: ["nsfw_content_abuse"]` when separating ClickUp distillation and NSFW abuse campaigns. Suspicious-user score fields are explicit 0-100 percentages, and bot-farming signals use `bot_farming.*_percent` names. Missing future signals such as JA4 are returned as unavailable diagnostics by firewall-ui, not treated as zero-scored evidence.
 
 Example:
 
