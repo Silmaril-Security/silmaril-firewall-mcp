@@ -51,6 +51,11 @@ test('README links to the customer guide', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
 
   assert.match(readme, /docs\/customer-guide\.md/);
+});
+
+test('README includes a first-10-minutes flow', () => {
+  const readme = readFileSync(join(root, 'README.md'), 'utf8');
+
   assert.match(readme, /First 10 Minutes/);
 });
 
