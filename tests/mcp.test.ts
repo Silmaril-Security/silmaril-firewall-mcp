@@ -188,7 +188,9 @@ function installMockFetch() {
             bot_farming: {
               score_percent: '0-100 observed bot-farming correlation score.',
               max_possible_score_percent: '0-100 score ceiling with unavailable planned signals.',
-              signal_score_percent: '0-100 per-signal score, or null when unavailable.',
+              signals: {
+                score_percent: '0-100 per-signal score, or null when unavailable.',
+              },
             },
           },
           defaults: {
@@ -473,7 +475,12 @@ test('get_schema exposes suspicious-users contract through MCP', async () => {
       correlation_signals: string[];
       score_fields: {
         suspicious_score_percent: string;
-        bot_farming: { score_percent: string; signal_score_percent: string };
+        top_finding_score_percent: string;
+        bot_farming: {
+          score_percent: string;
+          max_possible_score_percent: string;
+          signals: { score_percent: string };
+        };
       };
       defaults: { candidate_limit: number; lookback_candidate_limit: number };
     };
@@ -484,8 +491,10 @@ test('get_schema exposes suspicious-users contract through MCP', async () => {
   assert.ok(body.suspicious_users.abuse_categories.includes('model_distillation'));
   assert.ok(body.suspicious_users.correlation_signals.includes('shared_ja4_fingerprint'));
   assert.match(body.suspicious_users.score_fields.suspicious_score_percent, /0-100/);
+  assert.match(body.suspicious_users.score_fields.top_finding_score_percent, /0-100/);
   assert.match(body.suspicious_users.score_fields.bot_farming.score_percent, /bot-farming/);
-  assert.match(body.suspicious_users.score_fields.bot_farming.signal_score_percent, /per-signal/);
+  assert.match(body.suspicious_users.score_fields.bot_farming.max_possible_score_percent, /ceiling/);
+  assert.match(body.suspicious_users.score_fields.bot_farming.signals.score_percent, /per-signal/);
   assert.equal(body.suspicious_users.defaults.candidate_limit, 2000);
   assert.equal(body.suspicious_users.defaults.lookback_candidate_limit, 5000);
 
