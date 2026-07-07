@@ -156,6 +156,44 @@ function installMockFetch() {
       });
     }
 
+    if (url.pathname === '/api/mcp/v1/schema') {
+      return json({
+        version: 'v1',
+        scopes: ['firewalls:read', 'metrics:read', 'findings:read'],
+        time_ranges: ['5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '3d', '1w', '30d'],
+        suspicious_users: {
+          endpoint: '/api/mcp/v1/firewalls/:envKey/findings/users/suspicious',
+          scopes: ['findings:read'],
+          abuse_categories: [
+            'ai_control_abuse',
+            'data_exfiltration',
+            'secret_or_prompt_theft',
+            'system_or_account_compromise',
+            'service_disruption_or_cost_abuse',
+            'nsfw_content_abuse',
+            'model_distillation',
+            'other_harmful_attempt',
+          ],
+          correlation_signals: [
+            'new_user_burst',
+            'workspace_churn',
+            'limit_burn_proxy',
+            'prompt_campaign_reuse',
+            'runtime_identity_reuse',
+            'shared_ja4_fingerprint',
+          ],
+          defaults: {
+            range: '1d',
+            min_findings: 2,
+            user_limit: 25,
+            candidate_limit: 2000,
+            lookback_candidate_limit: 5000,
+            lookback_window: '30d',
+          },
+        },
+      });
+    }
+
     if (url.pathname === '/api/mcp/v1/firewalls') {
       return json({
         items: [{
@@ -180,6 +218,124 @@ function installMockFetch() {
         items: [],
         match_count: 0,
         received: Object.fromEntries(url.searchParams),
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/users/suspicious') {
+      return json({
+        firewall: { firewall_id: 'yc-prod-us-west-2' },
+        time_window: url.searchParams.get('range') ?? '1d',
+        filters: {
+          abuse_categories: url.searchParams.getAll('category').length
+            ? url.searchParams.getAll('category')
+            : 'all',
+          min_findings: Number(url.searchParams.get('minFindings') ?? 2),
+          user_limit: Number(url.searchParams.get('limit') ?? 25),
+          candidate_limit: Number(url.searchParams.get('candidateLimit') ?? 2000),
+          lookback_candidate_limit: Number(url.searchParams.get('lookbackCandidateLimit') ?? 5000),
+          lookback_window: '30d',
+        },
+        users: [{
+          user_id: 'qa-risk-user-001',
+          user_id_kind: 'metadata.userId',
+          translated_user_id: null,
+          workspace_ids: ['qa-workspace-001'],
+          primary_workspace_id: 'qa-workspace-001',
+          primary_abuse_category: 'model_distillation',
+          abuse_category_counts: {
+            model_distillation: 2,
+            nsfw_content_abuse: 1,
+          },
+          risk_class_counts: {
+            control_abuse: 2,
+          },
+          suspicious_score: 84,
+          findings: { suspicious: 2 },
+          conversations: {
+            suspicious: 2,
+            observed_total_with_findings: 2,
+            observed_malicious_percent: 100,
+            all_ai_conversation_percent: null,
+          },
+          account_farming: {
+            observed_score: 42,
+            max_possible_score: 72,
+            signals: {
+              new_user_burst: {
+                available: true,
+                score: 20,
+                level: 'strong',
+                metrics: { first_seen_users: 3 },
+                evidence: ['3 first-seen users share workspace/category/signature'],
+                version: 'v1',
+              },
+              workspace_churn: {
+                available: true,
+                score: 10,
+                level: 'moderate',
+                metrics: { distinct_suspicious_users_in_workspace_category: 3 },
+                evidence: ['3 suspicious users share workspace/category'],
+                version: 'v1',
+              },
+              limit_burn_proxy: {
+                available: true,
+                score: 12,
+                level: 'moderate',
+                metrics: { suspicious_conversations: 2 },
+                evidence: ['multiple suspicious conversations'],
+                version: 'v1',
+              },
+              prompt_campaign_reuse: {
+                available: true,
+                score: 0,
+                level: 'none',
+                metrics: {},
+                evidence: [],
+                version: 'v1',
+              },
+              runtime_identity_reuse: {
+                available: false,
+                score: null,
+                level: 'unavailable',
+                metrics: { reason: 'runtime_identity_unavailable' },
+                evidence: [],
+                version: 'v1',
+              },
+              shared_ja4_fingerprint: {
+                available: false,
+                score: null,
+                level: 'unavailable',
+                metrics: { reason: 'ja4_unavailable' },
+                evidence: [],
+                version: 'v1',
+              },
+            },
+          },
+          reason_codes: ['model_distillation', 'multiple_suspicious_conversations', 'new_user_burst'],
+          evidence_handles: [{
+            evidence_id: 'yc-prod-us-west-2:qa-risk-find-001',
+            finding_id: 'qa-risk-find-001',
+            firewall_id: 'yc-prod-us-west-2',
+          }],
+        }],
+        diagnostics: {
+          missing_identity_counts: {
+            user_id: 0,
+            workspace_id: 0,
+            conversation_id: 0,
+            runtime_identity: 1,
+            ja4: 2,
+          },
+          candidate_findings: 2,
+          candidate_findings_truncated: false,
+          lookback_findings: 4,
+          lookback_findings_truncated: false,
+          returned_users: 1,
+          matched_users: 1,
+        },
+        generated_at: '2026-07-07T00:00:00.000Z',
+        received: Object.fromEntries(url.searchParams),
+        received_category: url.searchParams.getAll('category'),
       });
     }
 
@@ -283,11 +439,40 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   const { client } = await connectedClient();
   const tools = await client.listTools();
   assert.ok(tools.tools.some((tool) => tool.name === 'list_firewalls'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'get_schema'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'list_suspicious_users'));
   assert.ok(tools.tools.some((tool) => tool.name === 'get_investigation_packet'));
 
   const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
   assert.equal(result.isError, undefined);
   assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
+  assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('get_schema exposes suspicious-users contract through MCP', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({ name: 'get_schema', arguments: {} });
+
+  assert.equal(result.isError, undefined);
+  const body = result.structuredContent as {
+    suspicious_users: {
+      endpoint: string;
+      scopes: string[];
+      abuse_categories: string[];
+      correlation_signals: string[];
+      defaults: { candidate_limit: number; lookback_candidate_limit: number };
+    };
+  };
+  assert.equal(body.suspicious_users.endpoint, '/api/mcp/v1/firewalls/:envKey/findings/users/suspicious');
+  assert.deepEqual(body.suspicious_users.scopes, ['findings:read']);
+  assert.ok(body.suspicious_users.abuse_categories.includes('nsfw_content_abuse'));
+  assert.ok(body.suspicious_users.abuse_categories.includes('model_distillation'));
+  assert.ok(body.suspicious_users.correlation_signals.includes('shared_ja4_fingerprint'));
+  assert.equal(body.suspicious_users.defaults.candidate_limit, 2000);
+  assert.equal(body.suspicious_users.defaults.lookback_candidate_limit, 5000);
+
+  const lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
+  assert.equal(lastUrl.pathname, '/api/mcp/v1/schema');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
 });
 
@@ -954,6 +1139,92 @@ test('finding tools forward triage and metadata filters to firewall-ui endpoints
   assert.equal(lastUrl.searchParams.get('by'), 'hook');
   assert.equal(lastUrl.searchParams.get('triage'), 'false_positive');
   assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod', 'silmaril.request_id=req-123']);
+});
+
+test('list_suspicious_users forwards category filters and preserves correlation diagnostics', async () => {
+  const { client } = await connectedClient();
+  const metadata = [{ key: 'stage', value: 'prod' }];
+
+  const result = await client.callTool({
+    name: 'list_suspicious_users',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      range: '30d',
+      categories: ['model_distillation', 'nsfw_content_abuse'],
+      minFindings: 2,
+      limit: 10,
+      candidateLimit: 2000,
+      lookbackCandidateLimit: 5000,
+      metadata,
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  const body = result.structuredContent as {
+    filters: {
+      abuse_categories: string[];
+      candidate_limit: number;
+      lookback_candidate_limit: number;
+    };
+    users: Array<{
+      user_id_kind: string;
+      primary_abuse_category: string;
+      abuse_category_counts: Record<string, number>;
+      findings: { suspicious: number; true_positive?: number };
+      account_farming: {
+        observed_score: number;
+        max_possible_score: number;
+        signals: Record<string, { available: boolean; score: number | null; level: string }>;
+      };
+      evidence_handles: Array<{ evidence_id: string }>;
+    }>;
+    diagnostics: { missing_identity_counts: Record<string, number> };
+    received_category: string[];
+  };
+  assert.deepEqual(body.filters.abuse_categories, ['model_distillation', 'nsfw_content_abuse']);
+  assert.equal(body.filters.candidate_limit, 2000);
+  assert.equal(body.filters.lookback_candidate_limit, 5000);
+  assert.equal(body.users[0].user_id_kind, 'metadata.userId');
+  assert.equal(body.users[0].primary_abuse_category, 'model_distillation');
+  assert.equal(body.users[0].abuse_category_counts.nsfw_content_abuse, 1);
+  assert.equal(body.users[0].findings.suspicious, 2);
+  assert.equal(body.users[0].findings.true_positive, undefined);
+  assert.equal(body.users[0].account_farming.signals.shared_ja4_fingerprint.available, false);
+  assert.equal(body.users[0].account_farming.signals.shared_ja4_fingerprint.score, null);
+  assert.equal(body.users[0].account_farming.signals.shared_ja4_fingerprint.level, 'unavailable');
+  assert.ok(body.users[0].account_farming.observed_score < body.users[0].account_farming.max_possible_score);
+  assert.equal(body.diagnostics.missing_identity_counts.ja4, 2);
+  assert.equal(body.users[0].evidence_handles[0].evidence_id, 'yc-prod-us-west-2:qa-risk-find-001');
+  assert.deepEqual(body.received_category, ['model_distillation', 'nsfw_content_abuse']);
+
+  const lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
+  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/users/suspicious');
+  assert.deepEqual(lastUrl.searchParams.getAll('category'), ['model_distillation', 'nsfw_content_abuse']);
+  assert.equal(lastUrl.searchParams.get('range'), '30d');
+  assert.equal(lastUrl.searchParams.get('minFindings'), '2');
+  assert.equal(lastUrl.searchParams.get('limit'), '10');
+  assert.equal(lastUrl.searchParams.get('candidateLimit'), '2000');
+  assert.equal(lastUrl.searchParams.get('lookbackCandidateLimit'), '5000');
+  assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod']);
+  assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('list_suspicious_users rejects empty category arrays', async () => {
+  const { client } = await connectedClient();
+
+  const result = await client.callTool({
+    name: 'list_suspicious_users',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      categories: [],
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(
+    upstreamCalls.some((call) => new URL(call.url).pathname.endsWith('/findings/users/suspicious')),
+    false,
+  );
 });
 
 test('group_findings can aggregate exact counts by triage verdict', async () => {

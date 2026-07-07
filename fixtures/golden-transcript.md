@@ -11,8 +11,10 @@ client -> tools/list
 server -> tools:
   list_firewalls
   get_firewall
+  get_schema
   get_metrics
   list_findings
+  list_suspicious_users
   get_finding_totals
   group_findings
   get_investigation_packet
@@ -36,6 +38,24 @@ server -> structuredContent:
   trace_capability.state: available
   detail_minimization.payload_opened: false
   detail_minimization.trace_opened: false
+
+client -> tools/call list_suspicious_users {
+  firewall_id: "clickup-alpha-us-west-2",
+  range: "30d",
+  categories: ["model_distillation", "nsfw_content_abuse"],
+  limit: 10
+}
+server -> structuredContent.users[0]:
+  user_id: <metadata user id>
+  user_id_kind: metadata.userId
+  primary_abuse_category: model_distillation
+  abuse_category_counts.model_distillation: <count>
+  abuse_category_counts.nsfw_content_abuse: <count>
+  findings.suspicious: <count>
+  account_farming.observed_score: <available-signal score>
+  account_farming.max_possible_score: <all-planned-signal score>
+  account_farming.signals.shared_ja4_fingerprint.available: false
+  evidence_handles[0].evidence_id: <firewall_id>:<finding_id>
 
 client -> tools/call get_finding {
   firewall_id: "yc-prod-us-west-2",

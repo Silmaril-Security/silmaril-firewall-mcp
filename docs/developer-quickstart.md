@@ -3,6 +3,7 @@
 1. Configure the Firewall MCP audience and public OAuth client in `firewall-ui`.
 2. Deploy or run `firewall-ui` with `SILMARIL_MCP_API_ENABLED=true`.
 3. Configure this repo with `FIREWALL_UI_BASE_URL`, `MCP_PUBLIC_BASE_URL`, and `MCP_OAUTH_STATE_SECRET`. Set `MCP_AUTH0_ORGANIZATION` only for an explicit single-org deployment; shared hosted deployments should leave it unset so Auth0 Universal Login can prompt for or discover the user's organization. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery. `MCP_OAUTH_STATE_SECRET` signs hosted OAuth bridge state and must be a high-entropy secret.
+   For localhost testing, the Auth0 public MCP client must allow `http://localhost:3002/oauth/callback`; otherwise Auth0 will reject the local bridge with a callback URL mismatch.
 4. Run the MCP server locally on a different port from `firewall-ui`:
 
 ```sh
@@ -21,8 +22,10 @@ codex mcp add silmaril-firewall --url http://localhost:3002/mcp
 ```txt
 list_firewalls
 get_firewall
+get_schema
 get_metrics
 list_findings
+list_suspicious_users
 get_investigation_packet
 ```
 
@@ -47,4 +50,4 @@ npm test
 npm run build
 ```
 
-`npm test` runs an SDK client over Streamable HTTP with mocked `firewall-ui` responses and verifies bearer forwarding, Origin rejection, normalized errors, and non-logging of payload canaries.
+`npm test` runs an SDK client over Streamable HTTP with mocked `firewall-ui` responses and verifies bearer forwarding, Origin rejection, normalized errors, suspicious-user category forwarding, schema/default exposure, JA4-unavailable diagnostics, and non-logging of payload canaries.
