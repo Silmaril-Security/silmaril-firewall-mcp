@@ -23,20 +23,31 @@ interface UpstreamCall {
   url: string;
   authorization: string | null;
   body: string | null;
+  activityKey?: string | null;
 }
 
 let upstreamCalls: UpstreamCall[] = [];
 let auditCalls: UpstreamCall[] = [];
+let activityCalls: UpstreamCall[] = [];
 let tokenCalls: UpstreamCall[] = [];
 let publicConfigOverride: Record<string, unknown> = {};
 let totalsEnvelope: 'blocked' | 'nested-total' | 'top-level-total' = 'blocked';
+let adminAccessAllowed = true;
+let mcpMode: 'public' | 'admin' = 'public';
+let deferredTasks: Promise<void>[] = [];
+let activitySinkFails = false;
 
 beforeEach(() => {
   upstreamCalls = [];
   auditCalls = [];
+  activityCalls = [];
   tokenCalls = [];
+  deferredTasks = [];
   publicConfigOverride = {};
   totalsEnvelope = 'blocked';
+  adminAccessAllowed = true;
+  mcpMode = 'public';
+  activitySinkFails = false;
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
   process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS = 'https://codex.test';
   delete process.env.MCP_ALLOWED_ORIGINS;
@@ -45,6 +56,8 @@ beforeEach(() => {
   process.env.MCP_OAUTH_STATE_SECRET = 'test-oauth-state-secret-with-enough-entropy';
   delete process.env.MCP_AUTH0_ORGANIZATION;
   delete process.env.MCP_AUDIT_URL;
+  delete process.env.MCP_ACTIVITY_ENABLED;
+  delete process.env.MCP_ACTIVITY_INGEST_KEY;
 });
 
 afterEach(() => {
@@ -76,7 +89,12 @@ function installMockFetch() {
     const url = new URL(req.url);
 
     if (url.hostname === 'mcp.test') {
-      return handleMcpRequest(req);
+      return handleMcpRequest(req, {
+        mode: mcpMode,
+        defer: (task) => {
+          deferredTasks.push(task());
+        },
+      });
     }
 
     if (url.hostname === 'audit.test') {
@@ -130,7 +148,53 @@ function installMockFetch() {
       url: req.url,
       authorization: req.headers.get('authorization'),
       body: await req.text(),
+      activityKey: req.headers.get('x-silmaril-mcp-activity-key'),
     });
+
+    if (url.pathname === '/api/mcp/v1/activity/events') {
+      activityCalls.push(upstreamCalls.pop()!);
+      if (activitySinkFails) throw new Error('activity sink unavailable');
+      return new Response(null, { status: 204 });
+    }
+
+    if (url.pathname === '/api/mcp/v1/admin/access') {
+      if (!adminAccessAllowed) {
+        return json({
+          error: { code: 'silmaril_admin_required', message: 'Global Silmaril admin access is required.' },
+        }, { status: 403 });
+      }
+      return new Response(null, { status: 204 });
+    }
+
+    if (url.pathname === '/api/mcp/v1/admin/activity/summary') {
+      return json({
+        range: url.searchParams.get('range'),
+        calls: 12,
+        successes: 11,
+        errors: 1,
+        active_tenants: 2,
+        active_users: 3,
+        daily_activity: [],
+        per_tenant: [],
+        tool_mix: [],
+        category_mix: [],
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/admin/activity/recent') {
+      return json({
+        range: url.searchParams.get('range'),
+        items: [{
+          occurred_at: '2026-07-13T00:00:00.000Z',
+          tenant: 'acme',
+          actor_subject: 'auth0|user',
+          actor_email: 'user@acme.com',
+          tool_name: 'list_findings',
+          category: 'findings_search',
+          outcome: 'success',
+        }],
+      });
+    }
 
     if (url.pathname === '/api/mcp/v1/config') {
       return json({
@@ -448,6 +512,23 @@ async function connectedClient() {
   return { client, transport };
 }
 
+async function connectedAdminClient() {
+  mcpMode = 'admin';
+  installMockFetch();
+  const client = new Client({ name: 'mcp-admin-test-client', version: '0.1.0' });
+  const transport = new StreamableHTTPClientTransport(new URL('https://mcp.test/admin/mcp'), {
+    requestInit: {
+      headers: {
+        authorization: 'Bearer silmaril-admin-access-token',
+        origin: 'https://codex.test',
+      },
+    },
+    fetch: globalThis.fetch,
+  });
+  await client.connect(transport);
+  return { client, transport };
+}
+
 test('initializes, lists tools, calls list_firewalls, and forwards bearer auth', async () => {
   const { client } = await connectedClient();
   const tools = await client.listTools();
@@ -571,6 +652,83 @@ test('serves OAuth protected resource metadata from firewall-ui public config', 
   assert.equal(body.silmaril_oauth_client_id, 'public-mcp-client-id');
   assert.ok(body.scopes_supported.includes('firewalls:read'));
   assert.ok(body.scopes_supported.includes('trace:read'));
+});
+
+test('serves separate admin MCP protected resource metadata', async () => {
+  installMockFetch();
+
+  const response = await handleProtectedResourceMetadataRequest(
+    new Request('https://mcp.test/.well-known/oauth-protected-resource/admin-mcp'),
+    readConfig(),
+    'admin',
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.resource, 'https://mcp.test/admin/mcp');
+  assert.equal(body.resource_name, 'Silmaril Firewall Admin MCP');
+  assert.deepEqual(body.scopes_supported, ['firewalls:read']);
+});
+
+test('rejects incomplete enabled activity configuration', () => {
+  process.env.MCP_ACTIVITY_ENABLED = 'true';
+  delete process.env.MCP_ACTIVITY_INGEST_KEY;
+  assert.throws(() => readConfig(), /MCP_ACTIVITY_INGEST_KEY/);
+
+  process.env.MCP_ACTIVITY_INGEST_KEY = 'too-short';
+  assert.throws(() => readConfig(), /at least 32 characters/);
+
+  process.env.MCP_ACTIVITY_INGEST_KEY = 'test-activity-key-with-at-least-32-characters';
+  assert.equal(readConfig().activityEnabled, true);
+});
+
+test('admin MCP denies non-admin callers before constructing the tool server', async () => {
+  installMockFetch();
+  adminAccessAllowed = false;
+
+  const response = await handleMcpRequest(new Request('https://mcp.test/admin/mcp', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer tenant-user-token',
+      origin: 'https://codex.test',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  }), { mode: 'admin' });
+
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error.code, 'silmaril_admin_required');
+  assert.deepEqual(
+    upstreamCalls.map((call) => new URL(call.url).pathname),
+    ['/api/mcp/v1/admin/access'],
+  );
+});
+
+test('admin MCP exposes only bounded adoption tools', async () => {
+  const { client } = await connectedAdminClient();
+  const tools = await client.listTools();
+  assert.deepEqual(
+    tools.tools.map((tool) => tool.name).sort(),
+    ['get_mcp_adoption_summary', 'list_mcp_activity'],
+  );
+
+  const summary = await client.callTool({
+    name: 'get_mcp_adoption_summary',
+    arguments: { range: '7d', tenant: 'acme' },
+  });
+  assert.equal(summary.isError, undefined);
+  assert.equal((summary.structuredContent as { calls: number }).calls, 12);
+
+  const recent = await client.callTool({
+    name: 'list_mcp_activity',
+    arguments: { range: '1d', actor_email: 'user@acme.com', limit: 10 },
+  });
+  assert.equal(recent.isError, undefined);
+  assert.equal(
+    (recent.structuredContent as { items: Array<{ tool_name: string }> }).items[0].tool_name,
+    'list_findings',
+  );
+  assert.equal(activityCalls.length, 0);
 });
 
 test('serves OAuth authorization server metadata with local registration bridge', async () => {
@@ -1313,6 +1471,68 @@ test('group_findings can aggregate exact counts by triage verdict', async () => 
   ]);
 });
 
+test('activity emits once per logical tool call with a minimal fail-open payload', async () => {
+  process.env.MCP_ACTIVITY_ENABLED = 'true';
+  process.env.MCP_ACTIVITY_INGEST_KEY = 'test-activity-key-with-at-least-32-characters';
+  const { client } = await connectedClient();
+
+  assert.equal(activityCalls.length, 0, 'initialization and tool discovery are excluded');
+  const success = await client.callTool({
+    name: 'group_findings',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      by: 'triage',
+      range: '1d',
+      metadata: [{ key: 'stage', value: 'CANARY_SECRET' }],
+    },
+  });
+  assert.equal(success.isError, undefined);
+  await Promise.all(deferredTasks);
+
+  assert.equal(activityCalls.length, 1, 'three upstream totals reads emit one logical event');
+  assert.equal(activityCalls[0].authorization, 'Bearer user-access-token');
+  assert.equal(activityCalls[0].activityKey, process.env.MCP_ACTIVITY_INGEST_KEY);
+  assert.deepEqual(JSON.parse(activityCalls[0].body ?? '{}'), {
+    version: 1,
+    tool_name: 'group_findings',
+    outcome: 'success',
+  });
+  assert.doesNotMatch(activityCalls[0].body ?? '', /CANARY_SECRET|yc-prod|metadata|arguments/);
+
+  deferredTasks = [];
+  const failure = await client.callTool({
+    name: 'get_firewall',
+    arguments: { firewall_id: 'forbidden-prod-us-west-2' },
+  });
+  assert.equal(failure.isError, true);
+  await Promise.all(deferredTasks);
+  assert.deepEqual(JSON.parse(activityCalls[1].body ?? '{}'), {
+    version: 1,
+    tool_name: 'get_firewall',
+    outcome: 'error',
+  });
+
+  deferredTasks = [];
+  activitySinkFails = true;
+  const failOpen = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(failOpen.isError, undefined);
+  await Promise.all(deferredTasks);
+});
+
+test('activity excludes input validation failures', async () => {
+  process.env.MCP_ACTIVITY_ENABLED = 'true';
+  process.env.MCP_ACTIVITY_INGEST_KEY = 'test-activity-key-with-at-least-32-characters';
+  const { client } = await connectedClient();
+
+  const result = await client.callTool({
+    name: 'list_suspicious_users',
+    arguments: { firewall_id: 'yc-prod-us-west-2', categories: [] },
+  });
+  assert.equal(result.isError, true);
+  await Promise.all(deferredTasks);
+  assert.equal(activityCalls.length, 0);
+});
+
 test('group_findings uses total fields when triage totals omit blocked', async () => {
   for (const envelope of ['nested-total', 'top-level-total'] as const) {
     totalsEnvelope = envelope;
@@ -1462,6 +1682,8 @@ test('chunked upstream responses are rejected as soon as they exceed the size ca
         publicBaseUrl: null,
         auth0Organization: null,
         oauthStateSecret: null,
+        activityEnabled: false,
+        activityIngestKey: null,
       },
     }),
     (err) =>

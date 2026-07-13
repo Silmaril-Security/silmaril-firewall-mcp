@@ -7,6 +7,16 @@ import {
 } from './firewall-ui-config';
 import { wwwAuthenticateHeader } from './oauth-metadata';
 import { createFirewallMcpServer } from './server';
+import { assertAdminAccess, createAdminMcpServer } from './admin-server';
+import { submitMcpActivity } from './activity';
+import { FirewallApiError } from './firewall-ui-client';
+
+export type DeferActivity = (task: () => Promise<void>) => void;
+
+export interface McpRequestOptions {
+  mode?: 'public' | 'admin';
+  defer?: DeferActivity;
+}
 
 const CORS_ALLOW_HEADERS = [
   'authorization',
@@ -80,8 +90,12 @@ function authInfo(token: string, publicConfig: FirewallMcpPublicConfig): AuthInf
   return info;
 }
 
-export async function handleMcpRequest(req: Request): Promise<Response> {
+export async function handleMcpRequest(
+  req: Request,
+  options: McpRequestOptions = {},
+): Promise<Response> {
   const config = readConfig();
+  const mode = options.mode ?? 'public';
   const origin = allowedOrigin(req, config);
   if (!origin.ok) {
     return json(403, 'origin_forbidden', 'Origin is not allowed for this MCP server.', origin.origin);
@@ -95,7 +109,7 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
   if (!token) {
     let challenge: string;
     try {
-      challenge = wwwAuthenticateHeader(config);
+      challenge = wwwAuthenticateHeader(config, mode);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'MCP OAuth metadata is unavailable.';
       return json(503, 'mcp_oauth_metadata_unavailable', message, origin.origin);
@@ -104,6 +118,17 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
     return json(401, 'token_missing', 'Missing bearer token.', origin.origin, {
       'www-authenticate': challenge,
     });
+  }
+
+  if (mode === 'admin') {
+    try {
+      await assertAdminAccess(token, config, req.signal);
+    } catch (err) {
+      if (err instanceof FirewallApiError) {
+        return json(err.status, err.code, err.message, origin.origin);
+      }
+      return json(503, 'mcp_admin_access_unavailable', 'MCP admin authorization is unavailable.', origin.origin);
+    }
   }
 
   let publicConfig: FirewallMcpPublicConfig;
@@ -118,7 +143,12 @@ export async function handleMcpRequest(req: Request): Promise<Response> {
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   });
-  const server = createFirewallMcpServer(config);
+  const server = mode === 'admin'
+    ? createAdminMcpServer(config)
+    : createFirewallMcpServer(config, (event) => {
+      if (!config.activityEnabled || !options.defer) return;
+      options.defer(() => submitMcpActivity(event, config));
+    });
   await server.connect(transport);
 
   const response = await transport.handleRequest(req, {

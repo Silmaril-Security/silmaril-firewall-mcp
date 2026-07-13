@@ -14,6 +14,7 @@
 - The OAuth bridge sends `MCP_AUTH0_ORGANIZATION` only for explicit single-org deployments and rejects non-`org_...` organization values locally.
 - `firewall-ui` rejects wrong issuer, wrong audience, expiry, missing org, missing tenant, missing admin claim, and missing scopes.
 - Cross-tenant resource probes are re-scoped through `firewall-ui` deployment lookup and return deterministic `404`.
+- `/admin/mcp` has separate protected-resource metadata and calls the `firewall-ui` admin-access endpoint before constructing or exposing its two tools.
 
 ## Tool Surface
 
@@ -26,6 +27,7 @@
 - Detail tools require `reason` and upstream detail scopes.
 - Page size is capped at 100 and firewall-ui rejects unbounded time windows.
 - MCP response byte size is capped by `MCP_MAX_RESPONSE_BYTES`.
+- Public activity telemetry emits once per logical handler call and excludes initialization, discovery, input validation failures, and all admin MCP calls.
 
 ## Sensitive Data Handling
 
@@ -35,6 +37,8 @@
 - Canary payload tests prove payload text is absent from audit bodies and console output.
 - Tool instructions tell agents to treat finding content as hostile prompt-injection data.
 - JA4 and other fingerprint-derived fields are not exposed by the MCP server; when absent, firewall-ui returns unavailable signal diagnostics instead of zero scores.
+- Activity bodies contain only schema version, tool name, and success/error. They never contain identities, arguments, results, target IDs, queries, reasons, payloads, traces, IPs, or user agents; identity is derived by `firewall-ui` from the verified bearer.
+- Activity POSTs use a server-only shared key, a 1.5-second timeout, no retries, and fail open without logging credentials or event details.
 
 ## Runtime Coverage
 

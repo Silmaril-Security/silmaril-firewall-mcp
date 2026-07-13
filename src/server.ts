@@ -6,6 +6,7 @@ import { auditDetailAccess } from './audit';
 import { enc, firewallGetJson, pathWithQuery, FirewallApiError } from './firewall-ui-client';
 import type { QueryParams } from './firewall-ui-client';
 import type { ServerConfig } from './config';
+import type { McpActivityEvent, McpActivityOutcome } from './activity';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -36,6 +37,7 @@ const MetadataConditionSchema = z.object({
 type TriageFilter = z.infer<typeof TriageFilterSchema>;
 type MetadataCondition = z.infer<typeof MetadataConditionSchema>;
 type AbuseCategory = z.infer<typeof AbuseCategorySchema>;
+export type ActivityRecorder = (event: McpActivityEvent) => void;
 
 interface FindingTotalsPayload {
   blocked?: number | null;
@@ -181,19 +183,32 @@ async function callFirewall<T>(
   path: string,
   extra: Extra,
   config: ServerConfig,
+  recordActivity?: ActivityRecorder,
   onSuccess?: () => void,
 ) {
+  let bearer: string | null = null;
+  let outcome: McpActivityOutcome = 'error';
   try {
+    bearer = token(extra);
     const payload = await firewallGetJson<T>({
       path,
-      token: token(extra),
+      token: bearer,
       config,
       signal: extra.signal,
     });
     onSuccess?.();
+    outcome = 'success';
     return mcpResult(toolName, payload);
   } catch (err) {
     return mcpErrorResult(err);
+  } finally {
+    if (bearer) {
+      try {
+        recordActivity?.({ toolName, outcome, token: bearer });
+      } catch {
+        // Activity telemetry is fail-open, including scheduler failures.
+      }
+    }
   }
 }
 
@@ -208,13 +223,17 @@ async function callTriageFindingGroups(
   },
   extra: Extra,
   config: ServerConfig,
+  recordActivity?: ActivityRecorder,
 ) {
   const buckets: TriageFilter[] = args.triage
     ? [args.triage]
     : ['true_positive', 'false_positive', 'untriaged'];
 
+  let bearer: string | null = null;
+  let outcome: McpActivityOutcome = 'error';
   try {
-    const bearer = token(extra);
+    bearer = token(extra);
+    const authenticatedToken = bearer;
     const items = await Promise.all(buckets.map(async (triage) => {
       const payload = await firewallGetJson<FindingTotalsPayload>({
         path: pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewallId)}/findings/totals`, findingQueryParams({
@@ -224,7 +243,7 @@ async function callTriageFindingGroups(
           metadata: args.metadata,
           triage,
         })),
-        token: bearer,
+        token: authenticatedToken,
         config,
         signal: extra.signal,
       });
@@ -237,6 +256,7 @@ async function callTriageFindingGroups(
     }));
 
     const exactCounts = items.every((item) => typeof item.count === 'number');
+    outcome = 'success';
     return mcpResult('group_findings', {
       by: 'triage',
       items,
@@ -246,10 +266,21 @@ async function callTriageFindingGroups(
     });
   } catch (err) {
     return mcpErrorResult(err);
+  } finally {
+    if (bearer) {
+      try {
+        recordActivity?.({ toolName: 'group_findings', outcome, token: bearer });
+      } catch {
+        // Activity telemetry is fail-open, including scheduler failures.
+      }
+    }
   }
 }
 
-export function createFirewallMcpServer(config: ServerConfig): McpServer {
+export function createFirewallMcpServer(
+  config: ServerConfig,
+  recordActivity?: ActivityRecorder,
+): McpServer {
   const server = new McpServer({
     name: 'silmaril-firewall-mcp',
     version: '0.1.0',
@@ -268,7 +299,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     inputSchema: {},
     annotations: readOnlyAnnotations,
   }, async (_args, extra) =>
-    callFirewall('list_firewalls', '/api/mcp/v1/firewalls', extra, config));
+    callFirewall('list_firewalls', '/api/mcp/v1/firewalls', extra, config, recordActivity));
 
   server.registerTool('get_firewall', {
     title: 'Get Firewall',
@@ -278,7 +309,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     },
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id }, extra) =>
-    callFirewall('get_firewall', `/api/mcp/v1/firewalls/${enc(firewall_id)}`, extra, config));
+    callFirewall('get_firewall', `/api/mcp/v1/firewalls/${enc(firewall_id)}`, extra, config, recordActivity));
 
   server.registerTool('get_schema', {
     title: 'Get MCP Schema',
@@ -286,7 +317,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     inputSchema: {},
     annotations: readOnlyAnnotations,
   }, async (_args, extra) =>
-    callFirewall('get_schema', '/api/mcp/v1/schema', extra, config));
+    callFirewall('get_schema', '/api/mcp/v1/schema', extra, config, recordActivity));
 
   server.registerTool('get_metrics', {
     title: 'Get Metrics',
@@ -301,7 +332,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
       range,
       startTime,
       endTime,
-    }), extra, config));
+    }), extra, config, recordActivity));
 
   server.registerTool('list_findings', {
     title: 'List Findings',
@@ -322,7 +353,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     },
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, ...args }, extra) =>
-    callFirewall('list_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings`, findingQueryParams(args)), extra, config));
+    callFirewall('list_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings`, findingQueryParams(args)), extra, config, recordActivity));
 
   server.registerTool('list_suspicious_users', {
     title: 'List Suspicious Users',
@@ -352,7 +383,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     callFirewall('list_suspicious_users', pathWithQuery(
       `/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/users/suspicious`,
       suspiciousUsersQueryParams(args),
-    ), extra, config));
+    ), extra, config, recordActivity));
 
   server.registerTool('get_finding_totals', {
     title: 'Get Finding Totals',
@@ -371,7 +402,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
       endTime,
       triage,
       metadata,
-    })), extra, config));
+    })), extra, config, recordActivity));
 
   server.registerTool('group_findings', {
     title: 'Group Findings',
@@ -386,7 +417,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, by, triage, metadata, range, startTime, endTime }, extra) => {
     if (by === 'triage') {
-      return callTriageFindingGroups(firewall_id, { triage, metadata, range, startTime, endTime }, extra, config);
+      return callTriageFindingGroups(firewall_id, { triage, metadata, range, startTime, endTime }, extra, config, recordActivity);
     }
     return callFirewall('group_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/group`, findingQueryParams({
       by,
@@ -395,7 +426,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
       endTime,
       triage,
       metadata,
-    })), extra, config);
+    })), extra, config, recordActivity);
   });
 
   server.registerTool('get_investigation_packet', {
@@ -407,7 +438,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
     },
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, finding_id }, extra) =>
-    callFirewall('get_investigation_packet', `/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/investigation-packet`, extra, config));
+    callFirewall('get_investigation_packet', `/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/investigation-packet`, extra, config, recordActivity));
 
   server.registerTool('get_finding', {
     title: 'Get Finding',
@@ -421,7 +452,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
   }, async ({ firewall_id, finding_id, reason }, extra) => {
     return callFirewall('get_finding', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}`, {
       reason,
-    }), extra, config, () => {
+    }), extra, config, recordActivity, () => {
       void auditDetailAccess({ tool: 'get_finding', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
     });
   });
@@ -438,7 +469,7 @@ export function createFirewallMcpServer(config: ServerConfig): McpServer {
   }, async ({ firewall_id, finding_id, reason }, extra) => {
     return callFirewall('get_finding_trace', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/trace`, {
       reason,
-    }), extra, config, () => {
+    }), extra, config, recordActivity, () => {
       void auditDetailAccess({ tool: 'get_finding_trace', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
     });
   });

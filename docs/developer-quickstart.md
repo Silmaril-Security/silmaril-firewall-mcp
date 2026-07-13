@@ -43,6 +43,23 @@ The MCP host advertises itself as the authorization server for MCP clients. Its 
 
 When `MCP_AUTH0_ORGANIZATION` is unset and the client does not send an Auth0 organization ID, the MCP OAuth bridge forwards no `organization` parameter so Auth0 can prompt for or discover the organization. If a client explicitly sends `organization=org_...`, the bridge passes it through. Non-ID organization values are rejected locally instead of being forwarded to Auth0.
 
+## Activity Telemetry
+
+Public `/mcp` tool handlers can emit a minimal adoption event after the response
+using `MCP_ACTIVITY_ENABLED=true` and `MCP_ACTIVITY_INGEST_KEY`. The key must be
+at least 32 characters and exactly match the server-only key configured in
+`firewall-ui`. Enabled-but-incomplete configuration is rejected. Each logical
+tool call sends only tool name and success/error outcome with a 1.5-second
+timeout and no retry; initialization, tool discovery, argument validation
+failures, and `/admin/mcp` are excluded. Telemetry failure never changes tool
+results.
+
+The separate `/admin/mcp` resource exposes only
+`get_mcp_adoption_summary` and `list_mcp_activity`. Before constructing that
+server, the host calls `firewall-ui` to require `firewalls:read` and a verified
+global Silmaril admin claim. Its protected-resource metadata is at
+`/.well-known/oauth-protected-resource/admin-mcp`.
+
 ## Local Validation
 
 ```sh
@@ -52,4 +69,4 @@ npm test
 npm run build
 ```
 
-`npm test` runs an SDK client over Streamable HTTP with mocked `firewall-ui` responses and verifies bearer forwarding, Origin rejection, normalized errors, suspicious-user category forwarding, schema/default exposure, JA4-unavailable diagnostics, and non-logging of payload canaries.
+`npm test` runs an SDK client over Streamable HTTP with mocked `firewall-ui` responses and verifies bearer forwarding, Origin rejection, normalized errors, suspicious-user category forwarding, schema/default exposure, JA4-unavailable diagnostics, minimal one-per-call activity emission, admin preflight isolation, and non-logging of payload canaries.
