@@ -119,3 +119,8 @@ Most finding tools accept a bounded time window:
 ## Local Development
 
 Customer setup is the hosted URL above. Server setup and deployment configuration for Silmaril operators live in [docs/developer-quickstart.md](docs/developer-quickstart.md).
+
+Silmaril global administrators also have a separate `/admin/mcp` resource with
+only bounded adoption-summary and recent-activity tools. It is authorized by
+`firewall-ui` before the admin MCP server is constructed and is not part of the
+customer evidence tool surface.

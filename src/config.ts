@@ -6,6 +6,8 @@ export interface ServerConfig {
   allowedOrigins: string[];
   maxResponseBytes: number;
   auditUrl: string | null;
+  activityEnabled: boolean;
+  activityIngestKey: string | null;
 }
 
 const DEFAULT_MAX_RESPONSE_BYTES = 1_000_000;
@@ -45,7 +47,20 @@ function unique(items: readonly string[]): string[] {
   return [...new Set(items)];
 }
 
+function booleanEnv(name: string): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value || value === '0' || value === 'false') return false;
+  if (value === '1' || value === 'true') return true;
+  throw new Error(`${name} must be true, false, 1, or 0.`);
+}
+
 export function readConfig(): ServerConfig {
+  const activityEnabled = booleanEnv('MCP_ACTIVITY_ENABLED');
+  const activityIngestKey = process.env.MCP_ACTIVITY_INGEST_KEY?.trim() || null;
+  if (activityEnabled && (!activityIngestKey || activityIngestKey.length < 32)) {
+    throw new Error('MCP_ACTIVITY_INGEST_KEY must contain at least 32 characters when MCP_ACTIVITY_ENABLED=true.');
+  }
+
   return {
     firewallUiBaseUrl: requiredUrlEnv('FIREWALL_UI_BASE_URL'),
     publicBaseUrl: optionalBaseUrl(process.env.MCP_PUBLIC_BASE_URL),
@@ -62,5 +77,7 @@ export function readConfig(): ServerConfig {
       HARD_MAX_RESPONSE_BYTES,
     ),
     auditUrl: process.env.MCP_AUDIT_URL?.trim() || null,
+    activityEnabled,
+    activityIngestKey,
   };
 }
