@@ -4,6 +4,7 @@ import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sd
 import { z } from 'zod';
 import type { ServerConfig } from './config';
 import { FirewallApiError, firewallGetJson, pathWithQuery } from './firewall-ui-client';
+import { downstreamToken } from './auth-context';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -19,9 +20,7 @@ const readOnlyAnnotations = {
 } as const;
 
 function token(extra: Extra): string {
-  const value = extra.authInfo?.token;
-  if (!value) throw new Error('Missing authenticated bearer token.');
-  return value;
+  return downstreamToken(extra.authInfo);
 }
 
 function result(toolName: string, payload: unknown) {

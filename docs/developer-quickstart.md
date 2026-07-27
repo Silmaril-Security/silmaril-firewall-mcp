@@ -4,13 +4,16 @@ This page is for Silmaril operators who deploy or run the MCP server. Customer s
 
 1. Configure the Firewall MCP audience and public OAuth client in `firewall-ui`.
 2. Deploy or run `firewall-ui` with `SILMARIL_MCP_API_ENABLED=true`.
-3. Configure this repo with `FIREWALL_UI_BASE_URL`, `MCP_PUBLIC_BASE_URL`, and `MCP_OAUTH_STATE_SECRET`. Set `MCP_AUTH0_ORGANIZATION` only for an explicit single-org deployment; shared hosted deployments should leave it unset so Auth0 Universal Login can prompt for or discover the user's organization. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery. `MCP_OAUTH_STATE_SECRET` signs hosted OAuth bridge state and must be a high-entropy secret.
+3. Configure this repo with `FIREWALL_UI_BASE_URL`, `MCP_PUBLIC_BASE_URL`, and `MCP_OAUTH_STATE_SECRET`. The secret must contain at least 32 high-entropy bytes; it signs OAuth client/state artifacts and encrypts the resource-bound MCP access and refresh credentials. Set `MCP_AUTH0_ORGANIZATION` only for an explicit single-org deployment; shared hosted deployments should leave it unset so Auth0 Universal Login can prompt for or discover the user's organization. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery.
    For localhost testing, the Auth0 public MCP client must allow `http://localhost:3002/oauth/callback`; otherwise Auth0 will reject the local bridge with a callback URL mismatch.
+   Configure `MCP_AUDIT_URL` before enabling full finding or trace detail. Those
+   tools fail closed when the audit sink is absent, times out, or rejects an
+   event.
 4. Run the MCP server locally on a different port from `firewall-ui`:
 
 ```sh
 npm install
-FIREWALL_UI_BASE_URL=http://localhost:3000 MCP_PUBLIC_BASE_URL=http://localhost:3002 MCP_OAUTH_STATE_SECRET=dev-only-change-me PORT=3002 npm run dev
+FIREWALL_UI_BASE_URL=http://localhost:3000 MCP_PUBLIC_BASE_URL=http://localhost:3002 MCP_OAUTH_STATE_SECRET=dev-only-change-me-with-32-bytes-minimum PORT=3002 npm run dev
 ```
 
 5. Add the local server to an MCP client:
@@ -39,7 +42,22 @@ Use `get_finding` or `get_finding_trace` only after a compact evidence path is i
 
 Configure the Auth0 application used by `firewall-ui` as organization-scoped for shared hosted deployments. Use `organization_usage=require` with an organization prompt or discovery flow such as `organization_require_behavior=pre_login_prompt`, so Auth0 selects the organization before minting a token with `org_id`.
 
-The MCP host advertises itself as the authorization server for MCP clients. Its local registration endpoint returns the configured public client, its authorize route redirects to Silmaril login with a fixed hosted callback, and its token route forwards the authorization-code exchange with the client's PKCE verifier.
+The MCP host advertises itself as the authorization server for MCP clients. Its
+registration endpoint returns a unique signed client handle bound to exact HTTP
+loopback callbacks; it never exposes the shared Auth0 client ID. Every
+authorization displays client-specific consent, rejects `prompt=none`, requires
+S256 PKCE, and sends Auth0 through the fixed hosted callback. The token endpoint
+verifies the returned Auth0 JWT signature, issuer, audience, and expiry before
+issuing an encrypted credential bound to either `/mcp` or `/admin/mcp`. The
+inbound MCP credential is never forwarded to `firewall-ui`. Redirects are
+disabled on every credential-bearing server-to-server request.
+
+When a client omits `scope` during registration, it receives aggregate scopes
+only: `firewalls:read`, `metrics:read`, and `findings:read`. Full finding and
+trace access therefore requires explicit scope consent. Refresh credentials are
+bound to the dynamic client and original resource, refresh requests cannot
+expand scopes, and the bridge requires Auth0 refresh-token rotation before
+returning a replacement credential.
 
 When `MCP_AUTH0_ORGANIZATION` is unset and the client does not send an Auth0 organization ID, the MCP OAuth bridge forwards no `organization` parameter so Auth0 can prompt for or discover the organization. If a client explicitly sends `organization=org_...`, the bridge passes it through. Non-ID organization values are rejected locally instead of being forwarded to Auth0.
 
@@ -53,6 +71,28 @@ tool call sends only tool name and success/error outcome with a 1.5-second
 timeout and no retry; initialization, tool discovery, argument validation
 failures, and `/admin/mcp` are excluded. Telemetry failure never changes tool
 results.
+
+## Security Limits And Audit
+
+The MCP route rejects invalid credentials before JSON-RPC handling, rejects
+JSON-RPC batches and non-JSON or oversized requests, and applies an actor/client
+token bucket before upstream work. Higher-amplification tools consume weighted
+quota. `MCP_RATE_LIMIT_REQUESTS_PER_SECOND` defaults to 5,
+`MCP_RATE_LIMIT_BURST` defaults to 10, and `MCP_MAX_REQUEST_BYTES` defaults to
+256,000. Platform-level Vercel rate controls should remain enabled because the
+application bucket is per warm runtime instance.
+
+All upstream requests have a deadline controlled by
+`MCP_UPSTREAM_TIMEOUT_MS` (10 seconds by default). Public OAuth configuration is
+cached for `MCP_PUBLIC_CONFIG_CACHE_MS` (30 seconds by default) to bound
+discovery amplification.
+
+`get_finding` and `get_finding_trace` return evidence only after
+`MCP_AUDIT_URL` accepts one metadata-only event. The event includes a unique
+event ID, actor subject/email, tenant, organization, OAuth client, target IDs,
+reason, outcome, timestamp, correlation ID, token ID, and deployment version.
+It excludes access tokens, payloads, and traces. `MCP_AUDIT_TIMEOUT_MS`
+defaults to 3 seconds.
 
 The separate `/admin/mcp` resource exposes only
 `get_mcp_adoption_summary` and `list_mcp_activity`. Before constructing that
@@ -69,4 +109,9 @@ npm test
 npm run build
 ```
 
-`npm test` runs an SDK client over Streamable HTTP with mocked `firewall-ui` responses and verifies bearer forwarding, Origin rejection, normalized errors, suspicious-user category forwarding, schema/default exposure, JA4-unavailable diagnostics, minimal one-per-call activity emission, admin preflight isolation, and non-logging of payload canaries.
+`npm test` runs an SDK client over Streamable HTTP with mocked `firewall-ui` and
+Auth0 responses. It verifies credential/resource binding, callback and PKCE
+binding, explicit consent, signed JWT validation, refresh isolation, HTTP
+401/403/429 behavior, batch/request caps, downstream credential separation,
+normalized errors, admin preflight isolation, durable attributed sensitive
+audit, and non-logging of payload canaries.
