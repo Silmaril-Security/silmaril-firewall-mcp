@@ -66,7 +66,11 @@ export async function firewallGetJson<T>({
       authorization: `Bearer ${token}`,
     },
     cache: 'no-store',
-    signal,
+    redirect: 'error',
+    signal: AbortSignal.any([
+      signal ?? new AbortController().signal,
+      AbortSignal.timeout(config.upstreamTimeoutMs),
+    ]),
   });
 
   const text = await readBoundedText(response, config.maxResponseBytes);

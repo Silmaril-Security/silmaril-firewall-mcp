@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ServerConfig } from './config';
+import { decodeUtf8, readBoundedBody } from './bounded-body';
 
 export const DEFAULT_AUTHORIZATION_SCOPES = [
   'firewalls:read',
@@ -8,6 +9,7 @@ export const DEFAULT_AUTHORIZATION_SCOPES = [
 ] as const;
 
 const MAX_PUBLIC_CONFIG_BYTES = 64_000;
+const cache = new Map<string, { value: FirewallMcpPublicConfig; expiresAt: number }>();
 
 const RawPublicConfigSchema = z.object({
   version: z.literal('v1'),
@@ -37,10 +39,11 @@ async function readBoundedJson(response: Response): Promise<unknown> {
     throw new Error('firewall-ui MCP config exceeded the response size cap.');
   }
 
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_PUBLIC_CONFIG_BYTES) {
-    throw new Error('firewall-ui MCP config exceeded the response size cap.');
-  }
+  const text = decodeUtf8(await readBoundedBody(
+    response.body,
+    MAX_PUBLIC_CONFIG_BYTES,
+    'firewall-ui MCP config exceeded the response size cap.',
+  ));
 
   try {
     return JSON.parse(text);
@@ -53,11 +56,19 @@ export async function getFirewallMcpPublicConfig(
   config: ServerConfig,
   signal?: AbortSignal,
 ): Promise<FirewallMcpPublicConfig> {
+  const key = config.firewallUiBaseUrl;
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
   const response = await fetch(configUrl(config), {
     method: 'GET',
     headers: { accept: 'application/json' },
     cache: 'no-store',
-    signal,
+    redirect: 'error',
+    signal: AbortSignal.any([
+      signal ?? new AbortController().signal,
+      AbortSignal.timeout(config.upstreamTimeoutMs),
+    ]),
   });
 
   if (!response.ok) {
@@ -69,8 +80,17 @@ export async function getFirewallMcpPublicConfig(
     throw new Error('firewall-ui MCP API is disabled.');
   }
 
-  return {
+  const value = {
     ...raw,
     resource: raw.resource ?? raw.audience,
   };
+  cache.set(key, {
+    value,
+    expiresAt: Date.now() + config.publicConfigCacheMs,
+  });
+  return value;
+}
+
+export function resetFirewallMcpPublicConfigCacheForTests(): void {
+  cache.clear();
 }

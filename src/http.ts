@@ -2,14 +2,20 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { readConfig, type ServerConfig } from './config';
 import {
-  getFirewallMcpPublicConfig,
-  type FirewallMcpPublicConfig,
-} from './firewall-ui-config';
-import { wwwAuthenticateHeader } from './oauth-metadata';
+  type McpResourceKind,
+  wwwAuthenticateHeader,
+} from './oauth-metadata';
 import { createFirewallMcpServer } from './server';
 import { assertAdminAccess, createAdminMcpServer } from './admin-server';
 import { submitMcpActivity } from './activity';
-import { FirewallApiError } from './firewall-ui-client';
+import { FirewallApiError, firewallGetJson } from './firewall-ui-client';
+import {
+  McpCredentialError,
+  validateMcpAccessToken,
+  type McpCredential,
+} from './oauth-credentials';
+import { consumeRateLimit } from './rate-limit';
+import { decodeUtf8, readBoundedBody } from './bounded-body';
 
 export type DeferActivity = (task: () => Promise<void>) => void;
 
@@ -31,6 +37,30 @@ const CORS_EXPOSE_HEADERS = [
   'mcp-protocol-version',
   'www-authenticate',
 ].join(', ');
+
+const TOOL_SCOPES: Record<string, readonly string[]> = {
+  list_firewalls: ['firewalls:read'],
+  get_firewall: ['firewalls:read'],
+  get_schema: ['firewalls:read'],
+  get_metrics: ['metrics:read'],
+  list_findings: ['findings:read'],
+  list_suspicious_users: ['findings:read'],
+  get_finding_totals: ['findings:read'],
+  group_findings: ['findings:read'],
+  get_investigation_packet: ['findings:read'],
+  get_finding: ['findings:detail', 'payload:read'],
+  get_finding_trace: ['trace:read'],
+  get_mcp_adoption_summary: ['firewalls:read'],
+  list_mcp_activity: ['firewalls:read'],
+};
+
+const TOOL_COSTS: Record<string, number> = {
+  list_suspicious_users: 5,
+  group_findings: 3,
+  get_investigation_packet: 2,
+  get_finding: 2,
+  get_finding_trace: 2,
+};
 
 function json(
   status: number,
@@ -76,18 +106,91 @@ function bearerToken(req: Request): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function authInfo(token: string, publicConfig: FirewallMcpPublicConfig): AuthInfo {
-  const info: AuthInfo = {
+function authInfo(token: string, credential: McpCredential): AuthInfo {
+  return {
     token,
-    clientId: 'auth0-user-oauth',
-    scopes: [],
+    clientId: credential.client_id,
+    scopes: credential.scopes,
+    expiresAt: credential.exp,
+    resource: new URL(credential.resource),
+    extra: {
+      downstreamToken: credential.downstream_token,
+      subject: credential.subject,
+      organization: credential.organization,
+      tenant: credential.tenant,
+      actorEmail: credential.actor_email,
+      tokenId: credential.token_id,
+    },
   };
-  try {
-    info.resource = new URL(publicConfig.resource || publicConfig.audience);
-  } catch {
-    // firewall-ui owns audience validation; malformed upstream config should not leak into logs.
+}
+
+async function readBoundedMcpBody(
+  req: Request,
+  config: ServerConfig,
+): Promise<{ request: Request; message: unknown } | Response> {
+  const contentType = req.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    return json(415, 'unsupported_media_type', 'MCP POST requests require application/json.', req.headers.get('origin'));
   }
-  return info;
+  const contentLength = Number(req.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > config.maxRequestBytes) {
+    return json(413, 'request_too_large', 'MCP request exceeded the request size cap.', req.headers.get('origin'));
+  }
+  let body: Uint8Array;
+  try {
+    body = await readBoundedBody(
+      req.body,
+      config.maxRequestBytes,
+      'MCP request exceeded the request size cap.',
+    );
+  } catch {
+    return json(413, 'request_too_large', 'MCP request exceeded the request size cap.', req.headers.get('origin'));
+  }
+  let message: unknown;
+  try {
+    message = JSON.parse(decodeUtf8(body));
+  } catch {
+    return json(400, 'invalid_json', 'MCP request body is not valid JSON.', req.headers.get('origin'));
+  }
+  if (Array.isArray(message)) {
+    return json(400, 'batch_not_supported', 'JSON-RPC batching is not supported by MCP Streamable HTTP.', req.headers.get('origin'));
+  }
+  const transportBody = new ArrayBuffer(body.byteLength);
+  new Uint8Array(transportBody).set(body);
+  return {
+    message,
+    request: new Request(req, {
+      body: transportBody,
+      signal: req.signal,
+    }),
+  };
+}
+
+function requiredScopes(message: unknown): readonly string[] {
+  if (!message || typeof message !== 'object') return [];
+  const record = message as { method?: unknown; params?: { name?: unknown } };
+  if (record.method !== 'tools/call' || typeof record.params?.name !== 'string') return [];
+  return TOOL_SCOPES[record.params.name] ?? [];
+}
+
+function requestCost(message: unknown): number {
+  if (!message || typeof message !== 'object') return 1;
+  const record = message as { method?: unknown; params?: { name?: unknown } };
+  if (record.method !== 'tools/call' || typeof record.params?.name !== 'string') return 1;
+  return TOOL_COSTS[record.params.name] ?? 1;
+}
+
+async function assertPublicAccess(
+  credential: McpCredential,
+  config: ServerConfig,
+  signal?: AbortSignal,
+): Promise<void> {
+  await firewallGetJson({
+    path: '/api/mcp/v1/schema',
+    token: credential.downstream_token,
+    config,
+    signal,
+  });
 }
 
 export async function handleMcpRequest(
@@ -95,7 +198,7 @@ export async function handleMcpRequest(
   options: McpRequestOptions = {},
 ): Promise<Response> {
   const config = readConfig();
-  const mode = options.mode ?? 'public';
+  const mode: McpResourceKind = options.mode ?? 'public';
   const origin = allowedOrigin(req, config);
   if (!origin.ok) {
     return json(403, 'origin_forbidden', 'Origin is not allowed for this MCP server.', origin.origin);
@@ -120,23 +223,65 @@ export async function handleMcpRequest(
     });
   }
 
+  let credential: McpCredential;
+  try {
+    credential = validateMcpAccessToken(token, mode, config);
+  } catch (err) {
+    const message = err instanceof McpCredentialError
+      ? err.message
+      : 'Bearer token validation is unavailable.';
+    const status = err instanceof McpCredentialError ? 401 : 503;
+    return json(status, status === 401 ? 'token_invalid' : 'token_validation_unavailable', message, origin.origin, status === 401 ? {
+      'www-authenticate': wwwAuthenticateHeader(config, mode, 'invalid_token'),
+    } : undefined);
+  }
+
+  let transportRequest = req;
+  let message: unknown = null;
+  if (req.method === 'POST') {
+    const parsed = await readBoundedMcpBody(req, config);
+    if (parsed instanceof Response) return parsed;
+    transportRequest = parsed.request;
+    message = parsed.message;
+  }
+
+  const rateKey = `${mode}:${credential.client_id}:${credential.subject}`;
+  const rateLimit = consumeRateLimit(rateKey, config, requestCost(message));
+  if (!rateLimit.allowed) {
+    return json(429, 'rate_limit_exceeded', 'MCP request quota exceeded.', origin.origin, {
+      'retry-after': String(rateLimit.retryAfterSeconds),
+    });
+  }
+
+  const scopes = requiredScopes(message);
+  const missingScopes = scopes.filter((scope) => !credential.scopes.includes(scope));
+  if (missingScopes.length > 0) {
+    return json(403, 'insufficient_scope', `Required scope: ${missingScopes.join(' ')}.`, origin.origin, {
+      'www-authenticate': wwwAuthenticateHeader(config, mode, 'insufficient_scope', scopes),
+    });
+  }
+
   if (mode === 'admin') {
     try {
-      await assertAdminAccess(token, config, req.signal);
+      await assertAdminAccess(credential.downstream_token, config, req.signal);
     } catch (err) {
       if (err instanceof FirewallApiError) {
         return json(err.status, err.code, err.message, origin.origin);
       }
       return json(503, 'mcp_admin_access_unavailable', 'MCP admin authorization is unavailable.', origin.origin);
     }
-  }
-
-  let publicConfig: FirewallMcpPublicConfig;
-  try {
-    publicConfig = await getFirewallMcpPublicConfig(config, req.signal);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'MCP OAuth config is unavailable.';
-    return json(503, 'mcp_oauth_config_unavailable', message, origin.origin);
+  } else {
+    try {
+      await assertPublicAccess(credential, config, req.signal);
+    } catch (err) {
+      if (err instanceof FirewallApiError) {
+        const headers = err.status === 401 ? {
+          'www-authenticate': wwwAuthenticateHeader(config, mode, 'invalid_token'),
+        } : undefined;
+        return json(err.status, err.code, err.message, origin.origin, headers);
+      }
+      return json(503, 'mcp_access_validation_unavailable', 'MCP access validation is unavailable.', origin.origin);
+    }
   }
 
   const transport = new WebStandardStreamableHTTPServerTransport({
@@ -151,8 +296,8 @@ export async function handleMcpRequest(
     });
   await server.connect(transport);
 
-  const response = await transport.handleRequest(req, {
-    authInfo: authInfo(token, publicConfig),
+  const response = await transport.handleRequest(transportRequest, {
+    authInfo: authInfo(token, credential),
   });
   return withCors(response, origin.origin);
 }

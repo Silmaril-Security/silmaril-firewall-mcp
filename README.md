@@ -31,7 +31,7 @@ codex mcp add silmaril-firewall --url https://firewall-mcp.silmaril.dev/mcp
 
 When your MCP client connects, Silmaril login opens in the browser. Choose the customer organization you normally use for Silmaril. Your MCP access follows that organization and only returns Firewall data you are authorized to see.
 
-You should not need to paste tokens, configure OAuth fields, or provide cloud credentials. The hosted MCP server discovers the correct login metadata and forwards your signed-in user access to Silmaril's read-only evidence API.
+You should not need to paste tokens, configure OAuth fields, or provide cloud credentials. The hosted MCP server issues a resource-bound MCP credential after Silmaril login and uses a separate verified Auth0 credential for the read-only evidence API.
 
 ## First 10 Minutes
 
@@ -100,6 +100,9 @@ Count false positives for your-firewall-id over the last 7 days.
 - `get_finding_trace` retrieves trace evidence when available and your account has trace access.
 
 Start with aggregate and search tools. Use `get_finding` or `get_finding_trace` only when compact evidence is not enough.
+Those two sensitive tools require explicit detail scopes, a reason, and a
+durable audit sink. Their tool metadata marks them as restricted rather than
+safe for automatic read-only approval.
 
 ## Evidence Safety
 

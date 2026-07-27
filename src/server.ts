@@ -2,11 +2,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { auditDetailAccess } from './audit';
+import { assertSensitiveAuditConfigured, auditDetailAccess } from './audit';
 import { enc, firewallGetJson, pathWithQuery, FirewallApiError } from './firewall-ui-client';
 import type { QueryParams } from './firewall-ui-client';
 import type { ServerConfig } from './config';
 import type { McpActivityEvent, McpActivityOutcome } from './activity';
+import { actorContext, downstreamToken } from './auth-context';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -63,6 +64,18 @@ const readOnlyAnnotations = {
   openWorldHint: false,
 } as const;
 
+const sensitiveReadAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+} as const;
+
+const sensitiveToolMeta = {
+  'silmaril/sensitivity': 'restricted',
+  'silmaril/approval': 'oauth-scope-and-reason-required',
+} as const;
+
 const triageShape = {
   triage: TriageFilterSchema.optional().describe(
     'Filter by triage verdict/status. Use false_positive for exact false-positive counts, true_positive for confirmed attacks, triaged for all reviewed findings, or untriaged.',
@@ -104,9 +117,7 @@ function suspiciousUsersQueryParams(
 }
 
 function token(extra: Extra): string {
-  const value = extra.authInfo?.token;
-  if (!value) throw new Error('Missing authenticated bearer token.');
-  return value;
+  return downstreamToken(extra.authInfo);
 }
 
 function findingBlockedCount(payload: FindingTotalsPayload): number | null {
@@ -184,7 +195,6 @@ async function callFirewall<T>(
   extra: Extra,
   config: ServerConfig,
   recordActivity?: ActivityRecorder,
-  onSuccess?: () => void,
 ) {
   let bearer: string | null = null;
   let outcome: McpActivityOutcome = 'error';
@@ -196,7 +206,63 @@ async function callFirewall<T>(
       config,
       signal: extra.signal,
     });
-    onSuccess?.();
+    outcome = 'success';
+    return mcpResult(toolName, payload);
+  } catch (err) {
+    return mcpErrorResult(err);
+  } finally {
+    if (bearer) {
+      try {
+        recordActivity?.({ toolName, outcome, token: bearer });
+      } catch {
+        // Activity telemetry is fail-open, including scheduler failures.
+      }
+    }
+  }
+}
+
+async function callSensitiveFirewall<T>(
+  toolName: 'get_finding' | 'get_finding_trace',
+  path: string,
+  identifiers: { firewallId: string; findingId: string; reason: string },
+  extra: Extra,
+  config: ServerConfig,
+  recordActivity?: ActivityRecorder,
+) {
+  let bearer: string | null = null;
+  let outcome: McpActivityOutcome = 'error';
+  try {
+    bearer = token(extra);
+    assertSensitiveAuditConfigured(config);
+    let payload: T;
+    try {
+      payload = await firewallGetJson<T>({
+        path,
+        token: bearer,
+        config,
+        signal: extra.signal,
+      });
+    } catch (err) {
+      await auditDetailAccess({
+        tool: toolName,
+        firewallId: identifiers.firewallId,
+        findingId: identifiers.findingId,
+        reason: identifiers.reason,
+        requestId: extra.requestId,
+        outcome: 'error',
+        actor: actorContext(extra.authInfo),
+      }, config, extra.signal);
+      return mcpErrorResult(err);
+    }
+    await auditDetailAccess({
+      tool: toolName,
+      firewallId: identifiers.firewallId,
+      findingId: identifiers.findingId,
+      reason: identifiers.reason,
+      requestId: extra.requestId,
+      outcome: 'success',
+      actor: actorContext(extra.authInfo),
+    }, config, extra.signal);
     outcome = 'success';
     return mcpResult(toolName, payload);
   } catch (err) {
@@ -448,13 +514,16 @@ export function createFirewallMcpServer(
       finding_id: FirewalledIdSchema,
       reason: ReasonSchema,
     },
-    annotations: readOnlyAnnotations,
+    annotations: sensitiveReadAnnotations,
+    _meta: sensitiveToolMeta,
   }, async ({ firewall_id, finding_id, reason }, extra) => {
-    return callFirewall('get_finding', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}`, {
+    return callSensitiveFirewall('get_finding', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}`, {
       reason,
-    }), extra, config, recordActivity, () => {
-      void auditDetailAccess({ tool: 'get_finding', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
-    });
+    }), {
+      firewallId: firewall_id,
+      findingId: finding_id,
+      reason,
+    }, extra, config, recordActivity);
   });
 
   server.registerTool('get_finding_trace', {
@@ -465,13 +534,16 @@ export function createFirewallMcpServer(
       finding_id: FirewalledIdSchema,
       reason: ReasonSchema,
     },
-    annotations: readOnlyAnnotations,
+    annotations: sensitiveReadAnnotations,
+    _meta: sensitiveToolMeta,
   }, async ({ firewall_id, finding_id, reason }, extra) => {
-    return callFirewall('get_finding_trace', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/trace`, {
+    return callSensitiveFirewall('get_finding_trace', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/trace`, {
       reason,
-    }), extra, config, recordActivity, () => {
-      void auditDetailAccess({ tool: 'get_finding_trace', firewallId: firewall_id, findingId: finding_id, reason, requestId: extra.requestId }, config, extra.signal);
-    });
+    }), {
+      firewallId: firewall_id,
+      findingId: finding_id,
+      reason,
+    }, extra, config, recordActivity);
   });
 
   return server;

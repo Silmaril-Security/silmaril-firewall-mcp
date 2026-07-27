@@ -33,6 +33,7 @@ export async function submitMcpActivity(
         outcome: event.outcome,
       }),
       cache: 'no-store',
+      redirect: 'error',
       signal: controller.signal,
     });
   } catch {

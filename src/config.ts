@@ -4,14 +4,33 @@ export interface ServerConfig {
   auth0Organization: string | null;
   oauthStateSecret: string | null;
   allowedOrigins: string[];
+  maxRequestBytes: number;
   maxResponseBytes: number;
+  upstreamTimeoutMs: number;
+  publicConfigCacheMs: number;
+  rateLimitRequestsPerSecond: number;
+  rateLimitBurst: number;
   auditUrl: string | null;
+  auditTimeoutMs: number;
+  deploymentVersion: string;
   activityEnabled: boolean;
   activityIngestKey: string | null;
 }
 
+const DEFAULT_MAX_REQUEST_BYTES = 256_000;
+const HARD_MAX_REQUEST_BYTES = 1_000_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1_000_000;
 const HARD_MAX_RESPONSE_BYTES = 5_000_000;
+const DEFAULT_UPSTREAM_TIMEOUT_MS = 10_000;
+const HARD_MAX_UPSTREAM_TIMEOUT_MS = 30_000;
+const DEFAULT_PUBLIC_CONFIG_CACHE_MS = 30_000;
+const HARD_MAX_PUBLIC_CONFIG_CACHE_MS = 300_000;
+const DEFAULT_RATE_LIMIT_REQUESTS_PER_SECOND = 5;
+const HARD_MAX_RATE_LIMIT_REQUESTS_PER_SECOND = 20;
+const DEFAULT_RATE_LIMIT_BURST = 10;
+const HARD_MAX_RATE_LIMIT_BURST = 100;
+const DEFAULT_AUDIT_TIMEOUT_MS = 3_000;
+const HARD_MAX_AUDIT_TIMEOUT_MS = 10_000;
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://chatgpt.com',
   'https://chat.openai.com',
@@ -29,6 +48,15 @@ function numberEnv(value: string | undefined, fallback: number, max: number): nu
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.min(Math.floor(parsed), max);
+}
+
+function deploymentVersion(): string {
+  return (
+    process.env.VERCEL_GIT_COMMIT_SHA?.trim() ||
+    process.env.GIT_COMMIT_SHA?.trim() ||
+    process.env.npm_package_version?.trim() ||
+    'unknown'
+  );
 }
 
 function requiredUrlEnv(name: string): string {
@@ -71,12 +99,43 @@ export function readConfig(): ServerConfig {
       ...splitList(process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS),
       ...splitList(process.env.MCP_ALLOWED_ORIGINS),
     ]),
+    maxRequestBytes: numberEnv(
+      process.env.MCP_MAX_REQUEST_BYTES,
+      DEFAULT_MAX_REQUEST_BYTES,
+      HARD_MAX_REQUEST_BYTES,
+    ),
     maxResponseBytes: numberEnv(
       process.env.MCP_MAX_RESPONSE_BYTES,
       DEFAULT_MAX_RESPONSE_BYTES,
       HARD_MAX_RESPONSE_BYTES,
     ),
+    upstreamTimeoutMs: numberEnv(
+      process.env.MCP_UPSTREAM_TIMEOUT_MS,
+      DEFAULT_UPSTREAM_TIMEOUT_MS,
+      HARD_MAX_UPSTREAM_TIMEOUT_MS,
+    ),
+    publicConfigCacheMs: numberEnv(
+      process.env.MCP_PUBLIC_CONFIG_CACHE_MS,
+      DEFAULT_PUBLIC_CONFIG_CACHE_MS,
+      HARD_MAX_PUBLIC_CONFIG_CACHE_MS,
+    ),
+    rateLimitRequestsPerSecond: numberEnv(
+      process.env.MCP_RATE_LIMIT_REQUESTS_PER_SECOND,
+      DEFAULT_RATE_LIMIT_REQUESTS_PER_SECOND,
+      HARD_MAX_RATE_LIMIT_REQUESTS_PER_SECOND,
+    ),
+    rateLimitBurst: numberEnv(
+      process.env.MCP_RATE_LIMIT_BURST,
+      DEFAULT_RATE_LIMIT_BURST,
+      HARD_MAX_RATE_LIMIT_BURST,
+    ),
     auditUrl: process.env.MCP_AUDIT_URL?.trim() || null,
+    auditTimeoutMs: numberEnv(
+      process.env.MCP_AUDIT_TIMEOUT_MS,
+      DEFAULT_AUDIT_TIMEOUT_MS,
+      HARD_MAX_AUDIT_TIMEOUT_MS,
+    ),
+    deploymentVersion: deploymentVersion(),
     activityEnabled,
     activityIngestKey,
   };

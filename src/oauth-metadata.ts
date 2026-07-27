@@ -35,13 +35,17 @@ export function protectedResourceMetadataUrl(
 export function wwwAuthenticateHeader(
   config: ServerConfig,
   kind: McpResourceKind = 'public',
+  error?: 'invalid_token' | 'insufficient_scope',
+  requiredScopes?: readonly string[],
 ): string {
-  const scopes = kind === 'admin' ? ['firewalls:read'] : DEFAULT_AUTHORIZATION_SCOPES;
-  return [
+  const scopes = requiredScopes ?? (kind === 'admin' ? ['firewalls:read'] : DEFAULT_AUTHORIZATION_SCOPES);
+  const parts = [
     'Bearer',
     `resource_metadata="${protectedResourceMetadataUrl(config, kind)}"`,
     `scope="${scopes.join(' ')}"`,
-  ].join(' ');
+  ];
+  if (error) parts.push(`error="${error}"`);
+  return parts.join(' ');
 }
 
 export async function handleProtectedResourceMetadataRequest(
@@ -63,10 +67,6 @@ export async function handleProtectedResourceMetadataRequest(
         ? 'Silmaril Firewall Admin MCP'
         : 'Silmaril Firewall Evidence MCP',
       resource_documentation: 'https://github.com/Silmaril-Security/silmaril-firewall-mcp',
-      silmaril_firewall_ui_config: new URL('/api/mcp/v1/config', `${config.firewallUiBaseUrl}/`).toString(),
-      silmaril_oauth_resource: upstream.resource || upstream.audience,
-      silmaril_oauth_client_id: upstream.oauth?.client_id ?? undefined,
-      silmaril_upstream_authorization_servers: upstream.authorization_servers,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'MCP OAuth metadata is unavailable.';
