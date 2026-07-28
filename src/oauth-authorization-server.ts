@@ -75,7 +75,6 @@ const BridgeStateSchema = z.object({
   v: z.literal(ARTIFACT_VERSION),
   redirect_uri: z.string().url(),
   client_id: z.string().min(1),
-  client_name: z.string().min(1),
   code_challenge: z.string().regex(PKCE_VALUE_RE),
   code_challenge_method: z.literal('S256'),
   resource: z.string().url(),
@@ -87,7 +86,6 @@ const BridgeStateSchema = z.object({
 });
 
 const BridgeCodeSchema = BridgeStateSchema.omit({
-  client_name: true,
   organization: true,
   state: true,
 }).extend({
@@ -438,60 +436,6 @@ function resourceForRequest(value: string | null, config: ServerConfig): string 
   return allowed.includes(requested) ? requested : null;
 }
 
-function htmlEscape(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  })[character] ?? character);
-}
-
-function consentPage(
-  state: BridgeState,
-  upstreamAuthorizationIssuer: string,
-  config: ServerConfig,
-): Response {
-  const transaction = encodeBridgeState(state, config);
-  const authorizationOrigin = new URL(upstreamAuthorizationIssuer).origin;
-  const scopeItems = scopes(state.scope)
-    .map((scope) => `<li>${htmlEscape(scope)}</li>`)
-    .join('');
-  const body = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Authorize Silmaril Firewall MCP</title>
-<style>body{font-family:system-ui,sans-serif;max-width:42rem;margin:4rem auto;padding:0 1.5rem;color:#171717}code{word-break:break-all}button{padding:.7rem 1rem;margin-right:.5rem}ul{line-height:1.7}</style></head>
-<body><main><h1>Authorize MCP client</h1>
-<p><strong>${htmlEscape(state.client_name)}</strong> is requesting access to <code>${htmlEscape(state.resource)}</code>.</p>
-<ul>${scopeItems}</ul>
-<p>You will authenticate with Silmaril after approving this client-specific request.</p>
-<form method="post" action="${htmlEscape(new URL('/oauth/authorize', publicBaseUrl(config)).toString())}">
-<input type="hidden" name="transaction" value="${htmlEscape(transaction)}">
-<button type="submit" name="decision" value="approve">Approve and continue</button>
-<button type="submit" name="decision" value="deny">Deny</button>
-</form></main></body></html>`;
-  return new Response(body, {
-    status: 200,
-    headers: {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'no-store',
-      'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${authorizationOrigin}; base-uri 'none'; frame-ancestors 'none'`,
-      'x-content-type-options': 'nosniff',
-      'x-frame-options': 'DENY',
-      'referrer-policy': 'no-referrer',
-    },
-  });
-}
-
-function clientErrorRedirect(state: BridgeState, error: string, description: string): Response {
-  const callback = new URL(state.redirect_uri);
-  callback.searchParams.set('error', error);
-  callback.searchParams.set('error_description', description);
-  if (state.state) callback.searchParams.set('state', state.state);
-  return redirect(callback);
-}
-
 async function upstreamJwks(
   metadata: UpstreamAuthorizationServerMetadata,
   config: ServerConfig,
@@ -608,7 +552,7 @@ export async function handleAuthorizationRequest(
     return json({
       error: 'method_not_allowed',
       error_description: 'OAuth authorization requires GET.',
-    }, { status: 405, headers: { allow: 'GET, POST' } });
+    }, { status: 405, headers: { allow: 'GET' } });
   }
   const url = new URL(req.url);
   if (url.searchParams.get('prompt') === 'none') {
@@ -669,11 +613,10 @@ export async function handleAuthorizationRequest(
     }
     const organization = resolveAuth0Organization(url.searchParams.get('organization'), config);
     if (!organization.ok) return organization.response;
-    return consentPage({
+    const state: BridgeState = {
       v: ARTIFACT_VERSION,
       redirect_uri: redirectUri,
       client_id: url.searchParams.get('client_id')!,
-      client_name: registration.client_name,
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
       resource,
@@ -682,45 +625,7 @@ export async function handleAuthorizationRequest(
       iat: Date.now(),
       nonce: randomUUID(),
       state: url.searchParams.get('state') ?? undefined,
-    }, upstream.authorization_servers[0] ?? upstream.issuer, config);
-  } catch (err) {
-    return json({
-      error: 'server_error',
-      error_description: err instanceof Error ? err.message : 'MCP OAuth authorization is unavailable.',
-    }, { status: 503 });
-  }
-}
-
-export async function handleAuthorizationConsentRequest(
-  req: Request,
-  config: ServerConfig,
-): Promise<Response> {
-  if (req.method !== 'POST') {
-    return json({
-      error: 'method_not_allowed',
-      error_description: 'OAuth consent requires POST.',
-    }, { status: 405, headers: { allow: 'GET, POST' } });
-  }
-  if (!hasContentType(req, 'application/x-www-form-urlencoded')) {
-    return json({
-      error: 'invalid_request',
-      error_description: 'OAuth consent requires application/x-www-form-urlencoded.',
-    }, { status: 415 });
-  }
-  try {
-    const params = await readBoundedForm(req);
-    const state = decodeBridgeState(params.get('transaction'), config);
-    const registration = decodeRegistration(state.client_id, config);
-    if (!registration.redirect_uris.includes(state.redirect_uri)) {
-      return json({
-        error: 'invalid_request',
-        error_description: 'Consent transaction callback no longer matches the client registration.',
-      }, { status: 400 });
-    }
-    if (params.get('decision') !== 'approve') {
-      return clientErrorRedirect(state, 'access_denied', 'The user denied this MCP client request.');
-    }
-    const upstream = await getFirewallMcpPublicConfig(config, req.signal);
+    };
     const metadata = await fetchUpstreamAuthorizationServerMetadata(upstream, config, req.signal);
     const upstreamClientId = upstream.oauth?.client_id;
     if (!upstreamClientId) throw new Error('firewall-ui MCP OAuth client ID is not configured.');
@@ -738,9 +643,9 @@ export async function handleAuthorizationConsentRequest(
     return redirect(authorizationUrl);
   } catch (err) {
     return json({
-      error: 'invalid_request',
-      error_description: err instanceof Error ? err.message : 'Invalid OAuth consent transaction.',
-    }, { status: 400 });
+      error: 'server_error',
+      error_description: err instanceof Error ? err.message : 'MCP OAuth authorization is unavailable.',
+    }, { status: 503 });
   }
 }
 

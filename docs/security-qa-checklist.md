@@ -5,7 +5,7 @@
 - Auth0 access-token signatures, issuer, audience, and expiry are validated at token exchange and again by `firewall-ui` when the separate downstream credential is used.
 - The MCP route decrypts and validates a resource-bound MCP bearer before every non-OPTIONS request. Direct Auth0 JWTs and malformed, expired, or wrong-resource credentials fail at the HTTP boundary with `401`.
 - OAuth Protected Resource Metadata is available at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`.
-- OAuth Authorization Server Metadata is available at `/.well-known/oauth-authorization-server` with unique signed dynamic registrations, exact loopback callback binding, explicit client consent, hosted callback bridging, and encrypted token exchange.
+- OAuth Authorization Server Metadata is available at `/.well-known/oauth-authorization-server` with unique signed dynamic registrations, exact loopback callback binding, Auth0-hosted consent, hosted callback bridging, and encrypted token exchange.
 - Missing-token `401` responses include `WWW-Authenticate` with `resource_metadata` and aggregate/search scope guidance.
 - The MCP route rejects disallowed `Origin` headers before MCP message handling.
 - The MCP server never forwards the inbound MCP bearer. It extracts and forwards only the separately wrapped Auth0 credential to the configured `FIREWALL_UI_BASE_URL`.

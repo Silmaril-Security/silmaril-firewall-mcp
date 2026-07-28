@@ -17,7 +17,6 @@ import {
 import { firewallGetJson, FirewallApiError } from '../src/firewall-ui-client';
 import { handleProtectedResourceMetadataRequest } from '../src/oauth-metadata';
 import {
-  handleAuthorizationConsentRequest,
   handleAuthorizationRequest,
   handleAuthorizationServerMetadataRequest,
   handleClientRegistrationRequest,
@@ -191,28 +190,6 @@ async function registerClient(
   return (await response.json()).client_id;
 }
 
-function consentTransaction(response: Response): Promise<string> {
-  return response.text().then((body) => {
-    const match = /name="transaction" value="([^"]+)"/.exec(body);
-    assert.ok(match?.[1]);
-    return match[1].replaceAll('&amp;', '&');
-  });
-}
-
-async function approveAuthorization(response: Response): Promise<Response> {
-  return handleAuthorizationConsentRequest(
-    new Request('https://mcp.test/oauth/authorize', {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        transaction: await consentTransaction(response),
-        decision: 'approve',
-      }),
-    }),
-    readConfig(),
-  );
-}
-
 async function completeAuthorization(
   clientId: string,
   options: {
@@ -224,7 +201,7 @@ async function completeAuthorization(
     scope?: string;
   } = {},
 ): Promise<{
-  authorizationPage: Response;
+  authorization: Response;
   upstreamAuthorization: URL;
   callback: Response;
   bridgeCode: string;
@@ -244,12 +221,11 @@ async function completeAuthorization(
     code_challenge_method: 'S256',
   });
   if (options.organization) params.set('organization', options.organization);
-  const authorizationPage = await handleAuthorizationRequest(
+  const authorization = await handleAuthorizationRequest(
     new Request(`https://mcp.test/oauth/authorize?${params}`),
     readConfig(),
   );
-  const approved = await approveAuthorization(authorizationPage.clone());
-  const upstreamAuthorization = new URL(approved.headers.get('location') ?? '');
+  const upstreamAuthorization = new URL(authorization.headers.get('location') ?? '');
   const callback = await handleOAuthCallbackRequest(
     new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
       code: 'auth0-code',
@@ -259,7 +235,7 @@ async function completeAuthorization(
   );
   const callbackLocation = new URL(callback.headers.get('location') ?? '');
   return {
-    authorizationPage,
+    authorization,
     upstreamAuthorization,
     callback,
     bridgeCode: callbackLocation.searchParams.get('code') ?? '',
@@ -1123,20 +1099,15 @@ test('rejects OAuth metadata endpoints that leave the configured issuer origin',
   assert.match((await response.json()).error.message, /configured issuer origin/);
 });
 
-test('authorization requires client-specific consent before the fixed Auth0 callback bridge', async () => {
+test('authorization redirects directly to Auth0 consent through the fixed callback bridge', async () => {
   installMockFetch();
   const clientId = await registerClient();
   const flow = await completeAuthorization(clientId);
   const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
 
-  assert.equal(flow.authorizationPage.status, 200);
-  // Chromium applies form-action to the POST redirect chain, so the exact
-  // upstream authorization origin must remain in the consent page allowlist.
-  assert.equal(
-    flow.authorizationPage.headers.get('content-security-policy'),
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://tenant.example.auth0.com; base-uri 'none'; frame-ancestors 'none'",
-  );
-  assert.match(await flow.authorizationPage.text(), /QA MCP Client/);
+  assert.equal(flow.authorization.status, 302);
+  assert.equal(flow.authorization.headers.get('content-type'), null);
+  assert.equal(await flow.authorization.clone().text(), '');
   assert.equal(flow.upstreamAuthorization.origin, 'https://tenant.example.auth0.com');
   assert.equal(flow.upstreamAuthorization.pathname, '/authorize');
   assert.equal(flow.upstreamAuthorization.searchParams.get('client_id'), 'public-mcp-client-id');
@@ -1147,6 +1118,16 @@ test('authorization requires client-specific consent before the fixed Auth0 call
   assert.equal(callbackLocation.origin, 'http://127.0.0.1:1455');
   assert.ok(flow.bridgeCode.startsWith('code2.'));
   assert.equal(callbackLocation.searchParams.get('state'), 'codex-state');
+});
+
+test('authorization endpoint does not expose a local consent POST', async () => {
+  const response = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize', { method: 'POST' }),
+    readConfig(),
+  );
+
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get('allow'), 'GET');
 });
 
 test('authorization rejects prompt=none instead of reusing shared upstream consent', async () => {
@@ -1168,7 +1149,7 @@ test('authorization rejects prompt=none instead of reusing shared upstream conse
   assert.equal((await response.json()).error, 'interaction_required');
 });
 
-test('authorization bridge applies explicit Auth0 organization only after consent', async () => {
+test('authorization bridge applies explicit Auth0 organization to Auth0 consent', async () => {
   installMockFetch();
   process.env.MCP_AUTH0_ORGANIZATION = 'org_silmaril';
   const clientId = await registerClient();
