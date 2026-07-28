@@ -5,12 +5,13 @@
 - Auth0 access-token signatures, issuer, audience, and expiry are validated at token exchange and again by `firewall-ui` when the separate downstream credential is used.
 - The MCP route decrypts and validates a resource-bound MCP bearer before every non-OPTIONS request. Direct Auth0 JWTs and malformed, expired, or wrong-resource credentials fail at the HTTP boundary with `401`.
 - OAuth Protected Resource Metadata is available at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`.
-- OAuth Authorization Server Metadata is available at `/.well-known/oauth-authorization-server` with unique signed dynamic registrations, exact loopback callback binding, Auth0-hosted consent, hosted callback bridging, and encrypted token exchange.
+- OAuth Authorization Server Metadata is available at `/.well-known/oauth-authorization-server` with unique signed dynamic registrations, exact loopback callback binding, Auth0-hosted consent that displays the validated dynamic client name and display-safe callback, hosted callback bridging, and encrypted token exchange.
 - Missing-token `401` responses include `WWW-Authenticate` with `resource_metadata` and aggregate/search scope guidance.
 - The MCP route rejects disallowed `Origin` headers before MCP message handling.
 - The MCP server never forwards the inbound MCP bearer. It extracts and forwards only the separately wrapped Auth0 credential to the configured `FIREWALL_UI_BASE_URL`.
 - The MCP server discovers issuer, audience/resource, scopes, and public OAuth client ID from `firewall-ui` `/api/mcp/v1/config`.
 - The OAuth bridge sends no Auth0 organization parameter for shared hosted deployments, allowing Auth0 Universal Login to prompt for or discover the organization.
+- The OAuth bridge sends the validated dynamic client name and a display-safe callback as sanitized Auth0 `ext-` parameters. The hosted consent template renders and escapes both values before approval.
 - The OAuth bridge sends `MCP_AUTH0_ORGANIZATION` only for explicit single-org deployments and rejects non-`org_...` organization values locally.
 - `firewall-ui` rejects wrong issuer, wrong audience, expiry, missing org, missing tenant, missing admin claim, and missing scopes.
 - Cross-tenant resource probes are re-scoped through `firewall-ui` deployment lookup and return deterministic `404`.
@@ -58,3 +59,4 @@
 - Auth0 smoke: one org-scoped user can list/search/get only that tenant; another tenant envKey returns denied/not found.
 - Security smoke: malformed/direct/wrong-resource MCP credentials, wrong upstream audience/issuer/signature, expiry, missing org, missing scope, callback substitution, refresh replay, batch/oversize requests, quota exhaustion, and cross-tenant IDOR attempts.
 - Proof artifacts: golden MCP transcript, capability matrix, quickstart, evaluator walkthrough, and dogfood scorecard.
+- Auth0 smoke includes visually confirming that hosted consent shows the requesting dynamic client name and callback before approval.

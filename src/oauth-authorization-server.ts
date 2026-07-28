@@ -436,6 +436,12 @@ function resourceForRequest(value: string | null, config: ServerConfig): string 
   return allowed.includes(requested) ? requested : null;
 }
 
+function auth0ConsentDisplayValue(value: string): string {
+  return value
+    .replace(/[^A-Za-z0-9\-.*~@+ /:_]/g, '_')
+    .slice(0, 255);
+}
+
 async function upstreamJwks(
   metadata: UpstreamAuthorizationServerMetadata,
   config: ServerConfig,
@@ -639,6 +645,14 @@ export async function handleAuthorizationRequest(
     authorizationUrl.searchParams.set('code_challenge', state.code_challenge);
     authorizationUrl.searchParams.set('code_challenge_method', 'S256');
     authorizationUrl.searchParams.set('prompt', 'consent');
+    authorizationUrl.searchParams.set(
+      'ext-mcp-client-name',
+      auth0ConsentDisplayValue(registration.client_name),
+    );
+    authorizationUrl.searchParams.set(
+      'ext-mcp-client-callback',
+      auth0ConsentDisplayValue(redirectUri),
+    );
     if (state.organization) authorizationUrl.searchParams.set('organization', state.organization);
     return redirect(authorizationUrl);
   } catch (err) {

@@ -1114,6 +1114,11 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   assert.equal(flow.upstreamAuthorization.searchParams.get('redirect_uri'), 'https://mcp.test/oauth/callback');
   assert.equal(flow.upstreamAuthorization.searchParams.get('audience'), 'https://silmaril.security/firewall-ui/mcp-test');
   assert.equal(flow.upstreamAuthorization.searchParams.get('prompt'), 'consent');
+  assert.equal(flow.upstreamAuthorization.searchParams.get('ext-mcp-client-name'), 'QA MCP Client');
+  assert.equal(
+    flow.upstreamAuthorization.searchParams.get('ext-mcp-client-callback'),
+    'http://127.0.0.1:1455/oauth/callback',
+  );
   assert.equal(flow.callback.status, 302);
   assert.equal(callbackLocation.origin, 'http://127.0.0.1:1455');
   assert.ok(flow.bridgeCode.startsWith('code2.'));
@@ -1128,6 +1133,34 @@ test('authorization endpoint does not expose a local consent POST', async () => 
 
   assert.equal(response.status, 405);
   assert.equal(response.headers.get('allow'), 'GET');
+});
+
+test('authorization sanitizes dynamic client identity for Auth0 consent display', async () => {
+  installMockFetch();
+  const response = await handleClientRegistrationRequest(
+    new Request('https://mcp.test/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: ['http://127.0.0.1:1455/oauth/callback?channel=desktop'],
+        client_name: '<script>alert("client")</script>',
+      }),
+    }),
+    readConfig(),
+  );
+  const clientId = (await response.json()).client_id;
+  const flow = await completeAuthorization(clientId, {
+    redirectUri: 'http://127.0.0.1:1455/oauth/callback?channel=desktop',
+  });
+
+  assert.equal(
+    flow.upstreamAuthorization.searchParams.get('ext-mcp-client-name'),
+    '_script_alert__client___/script_',
+  );
+  assert.equal(
+    flow.upstreamAuthorization.searchParams.get('ext-mcp-client-callback'),
+    'http://127.0.0.1:1455/oauth/callback_channel_desktop',
+  );
 });
 
 test('authorization rejects prompt=none instead of reusing shared upstream consent', async () => {

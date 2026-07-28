@@ -47,9 +47,13 @@ registration endpoint returns a unique signed client handle bound to exact HTTP
 loopback callbacks; it never exposes the shared Auth0 client ID. Every
 authorization rejects `prompt=none`, requires S256 PKCE, and redirects directly
 to Auth0 for the only consent prompt through the fixed hosted callback. The
-token endpoint verifies the returned Auth0 JWT signature, issuer, audience, and
-expiry before issuing an encrypted credential bound to either `/mcp` or
-`/admin/mcp`. The
+bridge passes the validated dynamic client name and a display-safe callback as
+`ext-mcp-client-name` and `ext-mcp-client-callback`; the Auth0 hosted consent
+template must render both values so the user can identify the client receiving
+access. Treat both display values as untrusted text and rely on Auth0 template
+escaping. The token endpoint verifies the returned Auth0 JWT signature, issuer,
+audience, and expiry before issuing an encrypted credential bound to either
+`/mcp` or `/admin/mcp`. The
 inbound MCP credential is never forwarded to `firewall-ui`. Redirects are
 disabled on every credential-bearing server-to-server request.
 
@@ -112,7 +116,7 @@ npm run build
 
 `npm test` runs an SDK client over Streamable HTTP with mocked `firewall-ui` and
 Auth0 responses. It verifies credential/resource binding, callback and PKCE
-binding, Auth0-hosted consent, signed JWT validation, refresh isolation, HTTP
+binding, Auth0-hosted client identity, signed JWT validation, refresh isolation, HTTP
 401/403/429 behavior, batch/request caps, downstream credential separation,
 normalized errors, admin preflight isolation, durable attributed sensitive
 audit, and non-logging of payload canaries.
