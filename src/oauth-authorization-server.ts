@@ -448,8 +448,13 @@ function htmlEscape(value: string): string {
   })[character] ?? character);
 }
 
-function consentPage(state: BridgeState, config: ServerConfig): Response {
+function consentPage(
+  state: BridgeState,
+  upstreamAuthorizationIssuer: string,
+  config: ServerConfig,
+): Response {
   const transaction = encodeBridgeState(state, config);
+  const authorizationOrigin = new URL(upstreamAuthorizationIssuer).origin;
   const scopeItems = scopes(state.scope)
     .map((scope) => `<li>${htmlEscape(scope)}</li>`)
     .join('');
@@ -471,7 +476,7 @@ function consentPage(state: BridgeState, config: ServerConfig): Response {
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${authorizationOrigin}; base-uri 'none'; frame-ancestors 'none'`,
       'x-content-type-options': 'nosniff',
       'x-frame-options': 'DENY',
       'referrer-policy': 'no-referrer',
@@ -677,7 +682,7 @@ export async function handleAuthorizationRequest(
       iat: Date.now(),
       nonce: randomUUID(),
       state: url.searchParams.get('state') ?? undefined,
-    }, config);
+    }, upstream.authorization_servers[0] ?? upstream.issuer, config);
   } catch (err) {
     return json({
       error: 'server_error',

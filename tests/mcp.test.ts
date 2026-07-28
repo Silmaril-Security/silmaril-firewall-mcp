@@ -1130,7 +1130,12 @@ test('authorization requires client-specific consent before the fixed Auth0 call
   const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
 
   assert.equal(flow.authorizationPage.status, 200);
-  assert.match(flow.authorizationPage.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/);
+  // Chromium applies form-action to the POST redirect chain, so the exact
+  // upstream authorization origin must remain in the consent page allowlist.
+  assert.equal(
+    flow.authorizationPage.headers.get('content-security-policy'),
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://tenant.example.auth0.com; base-uri 'none'; frame-ancestors 'none'",
+  );
   assert.match(await flow.authorizationPage.text(), /QA MCP Client/);
   assert.equal(flow.upstreamAuthorization.origin, 'https://tenant.example.auth0.com');
   assert.equal(flow.upstreamAuthorization.pathname, '/authorize');
