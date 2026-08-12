@@ -302,7 +302,7 @@ function installMockFetch() {
           refresh_token: omitRotatedRefreshToken ? undefined : 'upstream-refresh-token',
           token_type: 'Bearer',
           expires_in: 3600,
-          scope: 'firewalls:read metrics:read',
+          scope: 'firewalls:read metrics:read offline_access',
         });
       }
 
@@ -1084,6 +1084,7 @@ test('serves OAuth authorization server metadata with local registration bridge'
   assert.deepEqual(body.token_endpoint_auth_methods_supported, ['none']);
   assert.deepEqual(body.code_challenge_methods_supported, ['S256']);
   assert.ok(body.scopes_supported.includes('findings:detail'));
+  assert.equal(body.scopes_supported.includes('offline_access'), false);
 });
 
 test('rejects OAuth metadata endpoints that leave the configured issuer origin', async () => {
@@ -1113,6 +1114,10 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   assert.equal(flow.upstreamAuthorization.searchParams.get('client_id'), 'public-mcp-client-id');
   assert.equal(flow.upstreamAuthorization.searchParams.get('redirect_uri'), 'https://mcp.test/oauth/callback');
   assert.equal(flow.upstreamAuthorization.searchParams.get('audience'), 'https://silmaril.security/firewall-ui/mcp-test');
+  assert.equal(
+    flow.upstreamAuthorization.searchParams.get('scope'),
+    'firewalls:read metrics:read offline_access',
+  );
   assert.equal(flow.upstreamAuthorization.searchParams.get('prompt'), 'consent');
   assert.equal(flow.upstreamAuthorization.searchParams.get('ext-mcp-client-name'), 'QA MCP Client');
   assert.equal(
@@ -1123,6 +1128,32 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   assert.equal(callbackLocation.origin, 'http://127.0.0.1:1455');
   assert.ok(flow.bridgeCode.startsWith('code2.'));
   assert.equal(callbackLocation.searchParams.get('state'), 'codex-state');
+});
+
+test('authorization omits upstream offline access for authorization-code-only clients', async () => {
+  installMockFetch();
+  const registration = await handleClientRegistrationRequest(
+    new Request('https://mcp.test/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: ['http://127.0.0.1:1455/oauth/callback'],
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+        scope: 'firewalls:read metrics:read',
+      }),
+    }),
+    readConfig(),
+  );
+  const clientId = (await registration.json()).client_id;
+  const flow = await completeAuthorization(clientId);
+
+  assert.equal(registration.status, 201);
+  assert.equal(
+    flow.upstreamAuthorization.searchParams.get('scope'),
+    'firewalls:read metrics:read',
+  );
 });
 
 test('authorization endpoint does not expose a local consent POST', async () => {
@@ -1341,6 +1372,7 @@ test('token bridge exchanges authorization code with fixed MCP callback and PKCE
   assert.equal(response.status, 200);
   assert.match(body.access_token, /^mcp_at_v1\./);
   assert.match(body.refresh_token, /^mcp_rt_v1\./);
+  assert.equal(body.scope, 'firewalls:read metrics:read');
   assert.equal(tokenCalls.length, 1);
   assert.equal(tokenCalls[0].authorization, null);
   assert.equal(upstreamBody.get('grant_type'), 'authorization_code');
