@@ -42,6 +42,13 @@ Use `get_finding` or `get_finding_trace` only after a compact evidence path is i
 
 Configure the Auth0 application used by `firewall-ui` as organization-scoped for shared hosted deployments. Use `organization_usage=require` with an organization prompt or discovery flow such as `organization_require_behavior=pre_login_prompt`, so Auth0 selects the organization before minting a token with `org_id`.
 
+Enable **Allow Offline Access** on the Auth0 API for the Firewall MCP audience.
+On the public Auth0 MCP application, enable the Refresh Token grant and rotating,
+expiring refresh tokens. For clients registered to use that grant, the OAuth
+bridge adds `offline_access` only to its upstream Auth0 authorization request. It
+does not advertise that authorization-server scope as a Firewall MCP resource
+permission or return it in the MCP credential scope.
+
 The MCP host advertises itself as the authorization server for MCP clients. Its
 registration endpoint returns a unique signed client handle bound to exact HTTP
 loopback callbacks; it never exposes the shared Auth0 client ID. Every

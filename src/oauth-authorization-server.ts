@@ -38,6 +38,7 @@ const SUPPORTED_GRANT_TYPES = ['authorization_code', 'refresh_token'];
 const SUPPORTED_RESPONSE_TYPES = ['code'];
 const SUPPORTED_TOKEN_ENDPOINT_AUTH_METHOD = 'none';
 const SUPPORTED_CODE_CHALLENGE_METHODS = ['S256'];
+const UPSTREAM_REFRESH_SCOPE = 'offline_access';
 const PKCE_VALUE_RE = /^[A-Za-z0-9._~-]{43,128}$/;
 
 const UpstreamAuthorizationServerMetadataSchema = z.object({
@@ -640,7 +641,11 @@ export async function handleAuthorizationRequest(
     authorizationUrl.searchParams.set('client_id', upstreamClientId);
     authorizationUrl.searchParams.set('redirect_uri', bridgeCallbackUrl(config));
     authorizationUrl.searchParams.set('state', encodeBridgeState(state, config));
-    authorizationUrl.searchParams.set('scope', state.scope);
+    const upstreamScopes = scopes(state.scope);
+    if (registration.grant_types.includes('refresh_token')) {
+      upstreamScopes.push(UPSTREAM_REFRESH_SCOPE);
+    }
+    authorizationUrl.searchParams.set('scope', upstreamScopes.join(' '));
     authorizationUrl.searchParams.set('audience', upstream.resource || upstream.audience);
     authorizationUrl.searchParams.set('code_challenge', state.code_challenge);
     authorizationUrl.searchParams.set('code_challenge_method', 'S256');
