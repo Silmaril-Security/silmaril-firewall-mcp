@@ -15,6 +15,9 @@ const RangeSchema = z.enum(['5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '
 const TriageFilterSchema = z.enum(['true_positive', 'false_positive', 'triaged', 'untriaged']);
 const GroupBySchema = z.enum(['hook', 'tool', 'class', 'triage']);
 const FirewalledIdSchema = z.string().min(1).max(256);
+const OwnerSelectorSchema = z.string().trim().min(1).max(320).describe(
+  'One owner email, API key name, or configured API key tag. Matching is case-insensitive and exact; a tag selects every key assigned to its owner.',
+);
 const ReasonSchema = z.string().min(8).max(512);
 const AbuseCategorySchema = z.enum([
   'ai_control_abuse',
@@ -88,6 +91,10 @@ const metadataShape = {
   ),
 };
 
+const ownerShape = {
+  owner: OwnerSelectorSchema.optional(),
+};
+
 function metadataQueryValues(metadata: MetadataCondition[] | undefined): string[] | undefined {
   if (!metadata?.length) return undefined;
   return metadata.map((condition) => `${condition.key.trim()}=${condition.value.trim()}`);
@@ -96,9 +103,11 @@ function metadataQueryValues(metadata: MetadataCondition[] | undefined): string[
 function findingQueryParams(
   args: Record<string, unknown> & { metadata?: MetadataCondition[] },
 ): QueryParams {
-  const { metadata, ...rest } = args;
+  const { metadata, owner, ...rest } = args;
   return {
     ...(rest as QueryParams),
+    apiKeyOwner: typeof owner === 'string' ? owner : undefined,
+    apiKeyOwnerMode: typeof owner === 'string' ? 'trusted_alias' : undefined,
     meta: metadataQueryValues(metadata),
   };
 }
@@ -286,6 +295,7 @@ async function callTriageFindingGroups(
     startTime?: string;
     endTime?: string;
     metadata?: MetadataCondition[];
+    owner?: string;
   },
   extra: Extra,
   config: ServerConfig,
@@ -307,6 +317,7 @@ async function callTriageFindingGroups(
           startTime: args.startTime,
           endTime: args.endTime,
           metadata: args.metadata,
+          owner: args.owner,
           triage,
         })),
         token: authenticatedToken,
@@ -402,7 +413,7 @@ export function createFirewallMcpServer(
 
   server.registerTool('list_findings', {
     title: 'List Findings',
-    description: 'Search authorized findings with compact previews, triage filters, and pagination. Does not return full payload text.',
+    description: 'Search authorized findings with compact previews, trusted owner or API key tag filtering, triage filters, and pagination. Does not return full payload text.',
     inputSchema: {
       firewall_id: FirewalledIdSchema,
       q: z.string().max(512).optional(),
@@ -410,6 +421,7 @@ export function createFirewallMcpServer(
       hook: z.string().max(128).optional(),
       toolName: z.string().max(256).optional(),
       ...triageShape,
+      ...ownerShape,
       ...metadataShape,
       sort: z.enum(['time', 'score', 'triage', 'severity']).optional(),
       dir: z.enum(['asc', 'desc']).optional(),
@@ -453,37 +465,40 @@ export function createFirewallMcpServer(
 
   server.registerTool('get_finding_totals', {
     title: 'Get Finding Totals',
-    description: 'Read bounded finding totals for one authorized firewall. Use triage=false_positive for an exact false-positive count.',
+    description: 'Read bounded finding totals for one authorized firewall, optionally filtered by a trusted owner identity or API key tag. Use triage=false_positive for an exact false-positive count.',
     inputSchema: {
       firewall_id: FirewalledIdSchema,
       ...triageShape,
+      ...ownerShape,
       ...metadataShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, triage, metadata, range, startTime, endTime }, extra) =>
+  }, async ({ firewall_id, triage, owner, metadata, range, startTime, endTime }, extra) =>
     callFirewall('get_finding_totals', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/totals`, findingQueryParams({
       range,
       startTime,
       endTime,
       triage,
+      owner,
       metadata,
     })), extra, config, recordActivity));
 
   server.registerTool('group_findings', {
     title: 'Group Findings',
-    description: 'Read bounded finding aggregates by hook, tool, risk class, or triage verdict. Use by=triage for exact true-positive, false-positive, and untriaged counts.',
+    description: 'Read bounded finding aggregates by hook, tool, risk class, or triage verdict, optionally filtered by a trusted owner identity or API key tag. Use by=triage for exact true-positive, false-positive, and untriaged counts.',
     inputSchema: {
       firewall_id: FirewalledIdSchema,
       by: GroupBySchema,
       ...triageShape,
+      ...ownerShape,
       ...metadataShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, by, triage, metadata, range, startTime, endTime }, extra) => {
+  }, async ({ firewall_id, by, triage, owner, metadata, range, startTime, endTime }, extra) => {
     if (by === 'triage') {
-      return callTriageFindingGroups(firewall_id, { triage, metadata, range, startTime, endTime }, extra, config, recordActivity);
+      return callTriageFindingGroups(firewall_id, { triage, owner, metadata, range, startTime, endTime }, extra, config, recordActivity);
     }
     return callFirewall('group_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/group`, findingQueryParams({
       by,
@@ -491,6 +506,7 @@ export function createFirewallMcpServer(
       startTime,
       endTime,
       triage,
+      owner,
       metadata,
     })), extra, config, recordActivity);
   });

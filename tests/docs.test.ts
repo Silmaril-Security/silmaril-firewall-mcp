@@ -72,6 +72,7 @@ test('customer guide includes happy path prompts for core workflows', () => {
   assert.match(guide, /List the firewalls I can access and tell me which one looks like production/);
   assert.match(guide, /summarize security posture over the last 24 hours using metrics and finding totals/);
   assert.match(guide, /Show the highest-risk findings for your-firewall-id over the last day and cite evidence IDs/);
+  assert.match(guide, /owner tagged payments-agent/);
   assert.match(guide, /Show suspicious users for your-firewall-id over the last 30 days/);
   assert.match(guide, /Filter suspicious users for your-firewall-id to model distillation only/);
   assert.match(guide, /Filter suspicious users for your-firewall-id to NSFW content abuse only/);

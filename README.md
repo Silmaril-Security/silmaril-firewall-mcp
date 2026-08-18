@@ -117,6 +117,8 @@ Most finding tools accept a bounded time window:
 
 `list_findings`, `get_finding_totals`, and `group_findings` accept `metadata` as an array of `{ "key": "...", "value": "..." }` conditions. Conditions are AND-combined and match firewall-ui behavior: `key` is a metadata JSON dot path with at most six segments, and `value` is matched case-insensitively by contains.
 
+Those three tools also accept one `owner` value. Supply an owner email, API key name, or configured API key tag. Matching is exact and case-insensitive. A tag resolves to its owner and includes findings from every retained key assigned to that owner. Unattributed findings are excluded instead of guessed; self-hosted Cascade history is available from the runtime attribution release forward.
+
 `list_suspicious_users` accepts the same bounded time window fields plus optional `categories`, `minFindings`, `limit`, `candidateLimit`, and `lookbackCandidateLimit`. Use `categories: ["model_distillation"]` or `categories: ["nsfw_content_abuse"]` when separating distillation and NSFW abuse campaigns. Suspicious-user score fields are explicit 0-100 percentages, and bot-farming signals use `bot_farming.*_percent` names. Missing future signals such as JA4 are returned as unavailable diagnostics by firewall-ui, not treated as zero-scored evidence.
 
 ## Local Development
