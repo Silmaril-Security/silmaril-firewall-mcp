@@ -59,6 +59,14 @@ Prompt:
 Show the highest-risk findings for your-firewall-id over the last day and cite evidence IDs.
 ```
 
+To constrain compact findings, totals, or groups to one authenticated owner, provide an owner email, API key name, or configured API key tag. Tags are exact, case-insensitive aliases for the whole owner.
+
+Prompt:
+
+```txt
+Show findings for your-firewall-id from the last seven days for the owner tagged payments-agent.
+```
+
 ### Incident Reconstruction
 
 Start from a finding ID. Ask for an investigation packet, then let the agent decide whether full payload or trace access is actually needed.

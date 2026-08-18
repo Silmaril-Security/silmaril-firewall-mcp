@@ -6,6 +6,7 @@
 | Metrics | SageMaker and CloudWatch endpoint metrics through `firewall-ui` | ECS/service metrics through `firewall-ui` ops source |
 | Findings search | Aurora findings table derived from envKey | Aurora findings table override from deployment registry |
 | Findings totals/groups | Aurora aggregate queries | Aurora aggregate queries against override table |
+| Owner/tag filtering | Trusted runtime identity across available history | Trusted one-way API key attribution from the owner-filter runtime release forward; older unattributed rows are excluded |
 | Suspicious users | Derived in `firewall-ui` from true-positive abuse evidence, category labels, and available bot-farming signals | Same, using the tenant findings table override |
 | Investigation packet | Full compact packet with runtime metadata and trace availability | Full compact packet with degraded trace availability metadata |
 | Full finding detail | Requires `findings:detail` and `payload:read` plus reason | Same |

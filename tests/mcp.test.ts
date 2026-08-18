@@ -1744,7 +1744,7 @@ test('uses audience as resource for older firewall-ui public config responses', 
   assert.equal(config.resource, 'https://silmaril.security/firewall-ui/mcp-legacy');
 });
 
-test('finding tools forward triage and metadata filters to firewall-ui endpoints', async () => {
+test('finding tools forward owner, triage, and metadata filters to firewall-ui endpoints', async () => {
   const { client } = await connectedClient();
   const metadata = [
     { key: 'stage', value: 'prod' },
@@ -1757,6 +1757,7 @@ test('finding tools forward triage and metadata filters to firewall-ui endpoints
       firewall_id: 'yc-prod-us-west-2',
       range: '1d',
       triage: 'false_positive',
+      owner: ' Payments-Agent ',
       metadata,
     },
   });
@@ -1765,6 +1766,8 @@ test('finding tools forward triage and metadata filters to firewall-ui endpoints
   let lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
   assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/totals');
   assert.equal(lastUrl.searchParams.get('triage'), 'false_positive');
+  assert.equal(lastUrl.searchParams.get('apiKeyOwner'), 'Payments-Agent');
+  assert.equal(lastUrl.searchParams.get('apiKeyOwnerMode'), 'trusted_alias');
   assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod', 'silmaril.request_id=req-123']);
 
   const findings = await client.callTool({
@@ -1772,6 +1775,7 @@ test('finding tools forward triage and metadata filters to firewall-ui endpoints
     arguments: {
       firewall_id: 'yc-prod-us-west-2',
       triage: 'true_positive',
+      owner: 'payments-agent',
       metadata,
       pageSize: 25,
     },
@@ -1780,6 +1784,8 @@ test('finding tools forward triage and metadata filters to firewall-ui endpoints
   lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
   assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings');
   assert.equal(lastUrl.searchParams.get('triage'), 'true_positive');
+  assert.equal(lastUrl.searchParams.get('apiKeyOwner'), 'payments-agent');
+  assert.equal(lastUrl.searchParams.get('apiKeyOwnerMode'), 'trusted_alias');
   assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod', 'silmaril.request_id=req-123']);
 
   const grouped = await client.callTool({
@@ -1788,6 +1794,7 @@ test('finding tools forward triage and metadata filters to firewall-ui endpoints
       firewall_id: 'yc-prod-us-west-2',
       by: 'hook',
       triage: 'false_positive',
+      owner: 'payments-agent',
       metadata,
     },
   });
@@ -1796,7 +1803,36 @@ test('finding tools forward triage and metadata filters to firewall-ui endpoints
   assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/group');
   assert.equal(lastUrl.searchParams.get('by'), 'hook');
   assert.equal(lastUrl.searchParams.get('triage'), 'false_positive');
+  assert.equal(lastUrl.searchParams.get('apiKeyOwner'), 'payments-agent');
+  assert.equal(lastUrl.searchParams.get('apiKeyOwnerMode'), 'trusted_alias');
   assert.deepEqual(lastUrl.searchParams.getAll('meta'), ['stage=prod', 'silmaril.request_id=req-123']);
+});
+
+test('finding owner selector is one non-empty string and is not exposed elsewhere', async () => {
+  const { client } = await connectedClient();
+
+  for (const owner of ['', ['owner-a', 'owner-b'], 'x'.repeat(321)]) {
+    const result = await client.callTool({
+      name: 'list_findings',
+      arguments: {
+        firewall_id: 'yc-prod-us-west-2',
+        owner,
+      },
+    });
+    assert.equal(result.isError, true);
+  }
+
+  const tools = await client.listTools();
+  for (const name of ['list_findings', 'get_finding_totals', 'group_findings']) {
+    const schema = tools.tools.find((tool) => tool.name === name)?.inputSchema as {
+      properties?: Record<string, unknown>;
+    };
+    assert.ok(schema.properties?.owner);
+  }
+  const suspiciousSchema = tools.tools.find(
+    (tool) => tool.name === 'list_suspicious_users',
+  )?.inputSchema as { properties?: Record<string, unknown> };
+  assert.equal(suspiciousSchema.properties?.owner, undefined);
 });
 
 test('list_suspicious_users forwards category filters and preserves correlation diagnostics', async () => {
@@ -1907,6 +1943,7 @@ test('group_findings can aggregate exact counts by triage verdict', async () => 
       firewall_id: 'yc-prod-us-west-2',
       by: 'triage',
       range: '1d',
+      owner: 'payments-agent',
       metadata,
     },
   });
@@ -1935,12 +1972,14 @@ test('group_findings can aggregate exact counts by triage verdict', async () => 
     .filter((url) => url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/totals')
     .map((url) => ({
       triage: url.searchParams.get('triage'),
+      owner: url.searchParams.get('apiKeyOwner'),
+      ownerMode: url.searchParams.get('apiKeyOwnerMode'),
       meta: url.searchParams.getAll('meta'),
     }));
   assert.deepEqual(triageQueries, [
-    { triage: 'true_positive', meta: ['stage=prod'] },
-    { triage: 'false_positive', meta: ['stage=prod'] },
-    { triage: 'untriaged', meta: ['stage=prod'] },
+    { triage: 'true_positive', owner: 'payments-agent', ownerMode: 'trusted_alias', meta: ['stage=prod'] },
+    { triage: 'false_positive', owner: 'payments-agent', ownerMode: 'trusted_alias', meta: ['stage=prod'] },
+    { triage: 'untriaged', owner: 'payments-agent', ownerMode: 'trusted_alias', meta: ['stage=prod'] },
   ]);
 });
 
@@ -1956,6 +1995,7 @@ test('activity emits once per logical tool call with a minimal fail-open payload
       firewall_id: 'yc-prod-us-west-2',
       by: 'triage',
       range: '1d',
+      owner: 'OWNER_CANARY_SECRET',
       metadata: [{ key: 'stage', value: 'CANARY_SECRET' }],
     },
   });
@@ -1970,7 +2010,7 @@ test('activity emits once per logical tool call with a minimal fail-open payload
     tool_name: 'group_findings',
     outcome: 'success',
   });
-  assert.doesNotMatch(activityCalls[0].body ?? '', /CANARY_SECRET|yc-prod|metadata|arguments/);
+  assert.doesNotMatch(activityCalls[0].body ?? '', /CANARY_SECRET|OWNER_CANARY_SECRET|yc-prod|metadata|arguments/);
 
   deferredTasks = [];
   const failure = await client.callTool({
