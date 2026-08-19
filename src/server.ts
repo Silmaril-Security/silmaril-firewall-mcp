@@ -266,7 +266,12 @@ async function callFirewall<T>(
 async function callSensitiveFirewall<T>(
   toolName: 'get_finding' | 'get_finding_trace',
   path: string,
-  identifiers: { firewallId: string; findingId: string; reason: string },
+  identifiers: {
+    firewallId: string;
+    firewallSelectionPath?: string;
+    findingId: string;
+    reason: string;
+  },
   extra: Extra,
   config: ServerConfig,
   recordActivity?: ActivityRecorder,
@@ -276,6 +281,19 @@ async function callSensitiveFirewall<T>(
   try {
     bearer = token(extra);
     assertSensitiveAuditConfigured(config);
+    let auditFirewallId = identifiers.firewallId;
+    if (identifiers.firewallSelectionPath) {
+      const selection = await firewallGetJson<unknown>({
+        path: identifiers.firewallSelectionPath,
+        token: bearer,
+        config,
+        signal: extra.signal,
+      });
+      auditFirewallId = resolvedFirewallId(selection, identifiers.firewallId);
+      if (auditFirewallId === 'default') {
+        throw new Error('Default firewall selection did not return a canonical firewall_id.');
+      }
+    }
     let payload: T;
     try {
       payload = await firewallGetJson<T>({
@@ -287,7 +305,7 @@ async function callSensitiveFirewall<T>(
     } catch (err) {
       await auditDetailAccess({
         tool: toolName,
-        firewallId: identifiers.firewallId,
+        firewallId: auditFirewallId,
         findingId: identifiers.findingId,
         reason: identifiers.reason,
         requestId: extra.requestId,
@@ -298,7 +316,7 @@ async function callSensitiveFirewall<T>(
     }
     await auditDetailAccess({
       tool: toolName,
-      firewallId: resolvedFirewallId(payload, identifiers.firewallId),
+      firewallId: resolvedFirewallId(payload, auditFirewallId),
       findingId: identifiers.findingId,
       reason: identifiers.reason,
       requestId: extra.requestId,
@@ -592,6 +610,9 @@ export function createFirewallMcpServer(
       region,
     }), {
       firewallId: selected,
+      firewallSelectionPath: firewall_id
+        ? undefined
+        : pathWithQuery(firewallPath(undefined), { region }),
       findingId: finding_id,
       reason,
     }, extra, config, recordActivity);
@@ -614,6 +635,9 @@ export function createFirewallMcpServer(
       region,
     }), {
       firewallId: selected,
+      firewallSelectionPath: firewall_id
+        ? undefined
+        : pathWithQuery(firewallPath(undefined), { region }),
       findingId: finding_id,
       reason,
     }, extra, config, recordActivity);

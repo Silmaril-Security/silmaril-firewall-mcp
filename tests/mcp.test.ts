@@ -525,6 +525,12 @@ function installMockFetch() {
       });
     }
 
+    if (url.pathname === '/api/mcp/v1/firewalls/default/findings/missing-finding') {
+      return json({
+        error: { code: 'finding_not_found', message: 'Finding not found.' },
+      }, { status: 404 });
+    }
+
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2') {
       return json({
         firewall_id: 'yc-prod-us-west-2',
@@ -2376,6 +2382,25 @@ test('failed detail reads produce an attributed error audit event', async () => 
   assert.equal(audit.oauth_client_id, 'dcr-test-client');
   assert.equal(audit.target_finding_id, 'missing-finding');
   assert.equal(audit.deployment_version, '321c91e-test');
+});
+
+test('failed default sensitive reads audit the canonical resolved firewall', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_finding',
+    arguments: {
+      finding_id: 'missing-finding',
+      reason: 'Investigating missing default-selected evidence.',
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(auditCalls.length, 1);
+  const audit = JSON.parse(auditCalls[0].body ?? '{}');
+  assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
+  assert.equal(audit.target_finding_id, 'missing-finding');
+  assert.equal(audit.outcome, 'error');
 });
 
 test('sensitive evidence is withheld when durable audit is absent or rejects the event', async () => {
