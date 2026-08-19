@@ -515,7 +515,7 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/default/findings/qa-find-001') {
+    if (url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/qa-find-001') {
       return json({
         firewall: { firewall_id: 'clickup-cascade-alpha' },
         finding: {
@@ -525,7 +525,7 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/default/findings/missing-finding') {
+    if (url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/missing-finding') {
       return json({
         error: { code: 'finding_not_found', message: 'Finding not found.' },
       }, { status: 404 });
@@ -2358,6 +2358,15 @@ test('default sensitive reads audit the canonical resolved firewall', async () =
   assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
   assert.equal(audit.target_finding_id, 'qa-find-001');
   assert.equal(audit.outcome, 'success');
+  assert.deepEqual(
+    upstreamCalls
+      .map((call) => new URL(call.url).pathname)
+      .filter((path) => path.startsWith('/api/mcp/v1/firewalls/')),
+    [
+      '/api/mcp/v1/firewalls/default',
+      '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/qa-find-001',
+    ],
+  );
 });
 
 test('failed detail reads produce an attributed error audit event', async () => {
@@ -2401,6 +2410,15 @@ test('failed default sensitive reads audit the canonical resolved firewall', asy
   assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
   assert.equal(audit.target_finding_id, 'missing-finding');
   assert.equal(audit.outcome, 'error');
+  assert.deepEqual(
+    upstreamCalls
+      .map((call) => new URL(call.url).pathname)
+      .filter((path) => path.startsWith('/api/mcp/v1/firewalls/')),
+    [
+      '/api/mcp/v1/firewalls/default',
+      '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/missing-finding',
+    ],
+  );
 });
 
 test('sensitive evidence is withheld when durable audit is absent or rejects the event', async () => {

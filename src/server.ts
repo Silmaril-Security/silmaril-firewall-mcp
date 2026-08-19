@@ -265,7 +265,7 @@ async function callFirewall<T>(
 
 async function callSensitiveFirewall<T>(
   toolName: 'get_finding' | 'get_finding_trace',
-  path: string,
+  pathForFirewall: (firewallId: string) => string,
   identifiers: {
     firewallId: string;
     firewallSelectionPath?: string;
@@ -297,7 +297,7 @@ async function callSensitiveFirewall<T>(
     let payload: T;
     try {
       payload = await firewallGetJson<T>({
-        path,
+        path: pathForFirewall(auditFirewallId),
         token: bearer,
         config,
         signal: extra.signal,
@@ -605,10 +605,10 @@ export function createFirewallMcpServer(
     _meta: sensitiveToolMeta,
   }, async ({ firewall_id, region, finding_id, reason }, extra) => {
     const selected = selectedFirewallId(firewall_id);
-    return callSensitiveFirewall('get_finding', pathWithQuery(firewallPath(firewall_id, `/findings/${enc(finding_id)}`), {
-      reason,
-      region,
-    }), {
+    return callSensitiveFirewall('get_finding', (canonicalFirewallId) => pathWithQuery(
+      firewallPath(canonicalFirewallId, `/findings/${enc(finding_id)}`),
+      { reason, region },
+    ), {
       firewallId: selected,
       firewallSelectionPath: firewall_id
         ? undefined
@@ -630,10 +630,10 @@ export function createFirewallMcpServer(
     _meta: sensitiveToolMeta,
   }, async ({ firewall_id, region, finding_id, reason }, extra) => {
     const selected = selectedFirewallId(firewall_id);
-    return callSensitiveFirewall('get_finding_trace', pathWithQuery(firewallPath(firewall_id, `/findings/${enc(finding_id)}/trace`), {
-      reason,
-      region,
-    }), {
+    return callSensitiveFirewall('get_finding_trace', (canonicalFirewallId) => pathWithQuery(
+      firewallPath(canonicalFirewallId, `/findings/${enc(finding_id)}/trace`),
+      { reason, region },
+    ), {
       firewallId: selected,
       firewallSelectionPath: firewall_id
         ? undefined
