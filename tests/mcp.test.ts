@@ -515,6 +515,16 @@ function installMockFetch() {
       });
     }
 
+    if (url.pathname === '/api/mcp/v1/firewalls/default/findings/qa-find-001') {
+      return json({
+        firewall: { firewall_id: 'clickup-cascade-alpha' },
+        finding: {
+          evidence_id: 'clickup-cascade-alpha:qa-find-001',
+          text: 'CANARY_SECRET_SHOULD_NOT_APPEAR_IN_LOGS',
+        },
+      });
+    }
+
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2') {
       return json({
         firewall_id: 'yc-prod-us-west-2',
@@ -2323,6 +2333,25 @@ test('detail access audits metadata only and does not log payload text', async (
     console.warn = originalConsole.warn;
     console.error = originalConsole.error;
   }
+});
+
+test('default sensitive reads audit the canonical resolved firewall', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_finding',
+    arguments: {
+      finding_id: 'qa-find-001',
+      reason: 'Investigating default-selected ClickUp evidence.',
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(auditCalls.length, 1);
+  const audit = JSON.parse(auditCalls[0].body ?? '{}');
+  assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
+  assert.equal(audit.target_finding_id, 'qa-find-001');
+  assert.equal(audit.outcome, 'success');
 });
 
 test('failed detail reads produce an attributed error audit event', async () => {

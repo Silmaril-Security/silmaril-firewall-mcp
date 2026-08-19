@@ -115,6 +115,19 @@ function firewallPath(firewallId: string | undefined, suffix = ''): string {
   return `/api/mcp/v1/firewalls/${enc(selectedFirewallId(firewallId))}${suffix}`;
 }
 
+function resolvedFirewallId(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const firewall = 'firewall' in payload
+    && payload.firewall
+    && typeof payload.firewall === 'object'
+    ? payload.firewall
+    : payload;
+  if (!('firewall_id' in firewall) || typeof firewall.firewall_id !== 'string') {
+    return fallback;
+  }
+  return firewall.firewall_id.trim() || fallback;
+}
+
 function metadataQueryValues(metadata: MetadataCondition[] | undefined): string[] | undefined {
   if (!metadata?.length) return undefined;
   return metadata.map((condition) => `${condition.key.trim()}=${condition.value.trim()}`);
@@ -285,7 +298,7 @@ async function callSensitiveFirewall<T>(
     }
     await auditDetailAccess({
       tool: toolName,
-      firewallId: identifiers.firewallId,
+      firewallId: resolvedFirewallId(payload, identifiers.firewallId),
       findingId: identifiers.findingId,
       reason: identifiers.reason,
       requestId: extra.requestId,
