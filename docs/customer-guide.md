@@ -8,8 +8,9 @@ Silmaril Firewall is runtime security monitoring for AI applications. It watches
 
 Key terms:
 
-- Firewall: a deployed Silmaril runtime protection surface for one environment.
-- Deployment or env key: the `firewall_id` used by MCP tools, such as `your-firewall-id`.
+- Firewall: a logical Silmaril runtime protection resource that can include one or more regional deployments.
+- Firewall ID: the canonical logical `firewall_id` returned by MCP. It is optional when your organization has a configured default.
+- Region: an optional regional member selection for health, capacity, latency, errors, traffic, and post-attribution findings.
 - Finding: one security event recorded by the Firewall.
 - Risk class: the base security outcome, such as information disclosure, secret exposure, control abuse, system compromise, or service disruption.
 - Triage: review status for a finding, such as true positive, false positive, triaged, or untriaged.

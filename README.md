@@ -38,12 +38,11 @@ You should not need to paste tokens, configure OAuth fields, or provide cloud cr
 After connecting, start with this flow:
 
 1. Ask the agent to list your firewalls.
-2. Pick the production-looking `firewall_id` from the result.
-3. Ask for schema/defaults so you know available ranges, filters, and limits.
-4. Ask for metrics and finding totals over the last day.
-5. Ask for the highest-risk findings with evidence IDs.
-6. Ask for suspicious users over a longer window if you are investigating abusive users or account farming.
-7. Use investigation packets before requesting full finding payloads or traces.
+2. Ask for schema/defaults so you know available ranges, filters, and limits.
+3. Ask for metrics and finding totals over the last day. When your organization has a default firewall, you can omit `firewall_id`.
+4. Ask for the highest-risk findings with evidence IDs.
+5. Ask for suspicious users over a longer window if you are investigating abusive users or account farming.
+6. Use investigation packets before requesting full finding payloads or traces.
 
 ## Happy Path Prompts
 
@@ -54,7 +53,7 @@ List the firewalls I can access and tell me which one looks like production.
 ```
 
 ```txt
-For your-firewall-id, summarize security posture over the last 24 hours using metrics and finding totals.
+Summarize security posture for my default firewall over the last 24 hours using metrics and finding totals.
 ```
 
 ```txt
@@ -114,6 +113,10 @@ Most finding tools accept a bounded time window:
 
 - `range`: one of the supported presets, such as `1d`, `1w`, or `30d`.
 - `startTime` and `endTime`: absolute ISO timestamps, supplied together.
+
+Every firewall-scoped tool accepts optional `firewall_id` and `region`. Omit both to use the authenticated organization’s default logical firewall at Global scope. Supply `region` for regional health or post-attribution findings. Physical deployment IDs remain accepted, but responses use canonical logical firewall IDs and explicit region metadata. Organizations with multiple logical firewalls and no configured default receive `firewall_selection_required`.
+
+Global finding views include historical rows that predate trusted source-endpoint attribution. Regional finding views begin at the attribution rollout boundary; the response coverage metadata discloses this boundary, and historical regions are never inferred or backfilled.
 
 `list_findings`, `get_finding_totals`, and `group_findings` accept `metadata` as an array of `{ "key": "...", "value": "..." }` conditions. Conditions are AND-combined and match firewall-ui behavior: `key` is a metadata JSON dot path with at most six segments, and `value` is matched case-insensitively by contains.
 
