@@ -5,6 +5,8 @@ This page is for Silmaril operators who deploy or run the MCP server. Customer s
 1. Configure the Firewall MCP audience and public OAuth client in `firewall-ui`.
 2. Deploy or run `firewall-ui` with `SILMARIL_MCP_API_ENABLED=true`.
 3. Configure this repo with `FIREWALL_UI_BASE_URL`, `MCP_PUBLIC_BASE_URL`, and `MCP_OAUTH_STATE_SECRET`. The secret must contain at least 32 high-entropy bytes; it signs OAuth client/state artifacts and encrypts the resource-bound MCP access and refresh credentials. Set `MCP_AUTH0_ORGANIZATION` only for an explicit single-org deployment; shared hosted deployments should leave it unset so Auth0 Universal Login can prompt for or discover the user's organization. `MCP_PUBLIC_BASE_URL` is the trusted public origin advertised through OAuth discovery.
+
+For Vercel, configure Preview and Production independently. Each environment must point `FIREWALL_UI_BASE_URL` at the matching firewall-ui environment and `MCP_PUBLIC_BASE_URL` at its own stable public alias. Use different `MCP_OAUTH_STATE_SECRET` values for Preview and Production. Register the stable aliases and `/oauth/callback` URLs in Auth0; do not register ephemeral deployment URLs. The MCP project needs Auth0 public-client settings only and receives no AWS role or AWS credentials.
    For localhost testing, the Auth0 public MCP client must allow `http://localhost:3002/oauth/callback`; otherwise Auth0 will reject the local bridge with a callback URL mismatch.
    Configure `MCP_AUDIT_URL` before enabling full finding or trace detail. Those
    tools fail closed when the audit sink is absent, times out, or rejects an
@@ -13,7 +15,7 @@ This page is for Silmaril operators who deploy or run the MCP server. Customer s
 
 ```sh
 npm install
-FIREWALL_UI_BASE_URL=http://localhost:3000 MCP_PUBLIC_BASE_URL=http://localhost:3002 MCP_OAUTH_STATE_SECRET=dev-only-change-me-with-32-bytes-minimum PORT=3002 npm run dev
+FIREWALL_UI_BASE_URL=http://localhost:3001 MCP_PUBLIC_BASE_URL=http://localhost:3002 MCP_OAUTH_STATE_SECRET=dev-only-change-me-with-32-bytes-minimum PORT=3002 npm run dev
 ```
 
 5. Add the local server to an MCP client:
@@ -35,6 +37,23 @@ get_investigation_packet
 ```
 
 Use `get_finding` or `get_finding_trace` only after a compact evidence path is insufficient.
+
+## Vercel Environment Contract
+
+Configure stable aliases before adding Auth0 callbacks. Do not substitute an
+ephemeral Vercel deployment URL.
+
+| Variable | Preview | Production |
+|---|---|---|
+| `FIREWALL_UI_BASE_URL` | Stable firewall-ui Preview alias | `https://app.silmaril.dev` |
+| `MCP_PUBLIC_BASE_URL` | Stable MCP Preview alias | `https://firewall-mcp.silmaril.dev` |
+| `MCP_OAUTH_STATE_SECRET` | Preview-only 32+ byte secret | Separate Production 32+ byte secret |
+| `MCP_AUTH0_ORGANIZATION` | Unset for shared organization discovery | Unset for shared organization discovery |
+
+Register `${MCP_PUBLIC_BASE_URL}/oauth/callback` for each stable alias in the
+matching Auth0 public application. The MCP Vercel project must not receive
+`AWS_ROLE_ARN`, AWS access keys, or any other AWS permission; every evidence
+request goes through the matching firewall-ui environment with Auth0 OAuth.
 
 ## Operator Notes
 

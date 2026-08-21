@@ -58,6 +58,7 @@ let auditSinkFails = false;
 let upstreamAccessTokenOverride: string | null = null;
 let omitRotatedRefreshToken = false;
 let authMetadataOverride: Record<string, unknown> = {};
+let defaultSelectionAmbiguous = false;
 
 beforeEach(() => {
   upstreamCalls = [];
@@ -75,6 +76,7 @@ beforeEach(() => {
   upstreamAccessTokenOverride = null;
   omitRotatedRefreshToken = false;
   authMetadataOverride = {};
+  defaultSelectionAmbiguous = false;
   resetFirewallMcpPublicConfigCacheForTests();
   resetRateLimitsForTests();
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
@@ -454,6 +456,81 @@ function installMockFetch() {
       });
     }
 
+    if (
+      defaultSelectionAmbiguous
+      && url.pathname.startsWith('/api/mcp/v1/firewalls/default')
+    ) {
+      return json({
+        error: {
+          code: 'firewall_selection_required',
+          message: 'This organization has multiple logical firewalls and no configured default.',
+        },
+      }, { status: 409 });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/default') {
+      return json({
+        firewall_id: 'clickup-cascade-alpha',
+        scope: url.searchParams.has('region') ? 'regional' : 'global',
+        region: url.searchParams.get('region'),
+        regions: ['us-west-2', 'eu-west-1', 'ap-southeast-2', 'ap-southeast-5'],
+      });
+    }
+
+    if (
+      url.pathname === '/api/mcp/v1/firewalls/default/metrics'
+      || url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha-eu-west-1/metrics'
+    ) {
+      return json({
+        firewall: {
+          firewall_id: 'clickup-cascade-alpha',
+          scope: url.searchParams.has('region') ? 'regional' : 'global',
+          region: url.searchParams.get('region'),
+        },
+        coverage: {
+          complete: false,
+          available_regions: ['us-west-2', 'eu-west-1', 'ap-southeast-2'],
+          unavailable_regions: [{ region: 'ap-southeast-5', code: 'metrics_unavailable' }],
+        },
+        received: Object.fromEntries(url.searchParams),
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/default/findings') {
+      return json({
+        firewall: {
+          firewall_id: 'clickup-cascade-alpha',
+          scope: url.searchParams.has('region') ? 'regional' : 'global',
+          region: url.searchParams.get('region'),
+        },
+        findings: [],
+        coverage: {
+          regional_attribution: {
+            boundary: 'source_endpoint_rollout',
+            historical_unattributed_findings: 'global_only',
+            inferred_or_backfilled: false,
+          },
+        },
+        received: Object.fromEntries(url.searchParams),
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/qa-find-001') {
+      return json({
+        firewall: { firewall_id: 'clickup-cascade-alpha' },
+        finding: {
+          evidence_id: 'clickup-cascade-alpha:qa-find-001',
+          text: 'CANARY_SECRET_SHOULD_NOT_APPEAR_IN_LOGS',
+        },
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/missing-finding') {
+      return json({
+        error: { code: 'finding_not_found', message: 'Finding not found.' },
+      }, { status: 404 });
+    }
+
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2') {
       return json({
         firewall_id: 'yc-prod-us-west-2',
@@ -710,6 +787,24 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.ok(tools.tools.some((tool) => tool.name === 'get_schema'));
   assert.ok(tools.tools.some((tool) => tool.name === 'list_suspicious_users'));
   assert.ok(tools.tools.some((tool) => tool.name === 'get_investigation_packet'));
+  for (const name of [
+    'get_firewall',
+    'get_metrics',
+    'list_findings',
+    'list_suspicious_users',
+    'get_finding_totals',
+    'group_findings',
+    'get_investigation_packet',
+    'get_finding',
+    'get_finding_trace',
+  ]) {
+    const tool = tools.tools.find((candidate) => candidate.name === name);
+    assert.equal(
+      (tool?.inputSchema.required as string[] | undefined)?.includes('firewall_id') ?? false,
+      false,
+      `${name} should default firewall_id`,
+    );
+  }
   const detailTool = tools.tools.find((tool) => tool.name === 'get_finding');
   assert.equal(detailTool?.annotations?.readOnlyHint, false);
   assert.equal(detailTool?._meta?.['silmaril/sensitivity'], 'restricted');
@@ -718,6 +813,93 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(result.isError, undefined);
   assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('omitted firewall selection resolves globally and preserves partial coverage', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({ name: 'get_metrics', arguments: {} });
+
+  assert.equal(result.isError, undefined);
+  const body = result.structuredContent as {
+    firewall: { firewall_id: string; scope: string; region: string | null };
+    coverage: { complete: boolean; unavailable_regions: Array<{ region: string }> };
+  };
+  assert.equal(body.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(body.firewall.scope, 'global');
+  assert.equal(body.firewall.region, null);
+  assert.equal(body.coverage.complete, false);
+  assert.equal(body.coverage.unavailable_regions[0].region, 'ap-southeast-5');
+  assert.equal(
+    new URL(upstreamCalls.at(-1)?.url ?? '').pathname,
+    '/api/mcp/v1/firewalls/default/metrics',
+  );
+});
+
+test('region selection and physical IDs are forwarded while canonical metadata is returned', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_metrics',
+    arguments: {
+      firewall_id: 'clickup-cascade-alpha-eu-west-1',
+      region: 'eu-west-1',
+      range: '1h',
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  const body = result.structuredContent as {
+    firewall: { firewall_id: string; scope: string; region: string };
+  };
+  assert.deepEqual(body.firewall, {
+    firewall_id: 'clickup-cascade-alpha',
+    scope: 'regional',
+    region: 'eu-west-1',
+  });
+  const url = new URL(upstreamCalls.at(-1)?.url ?? '');
+  assert.equal(
+    url.pathname,
+    '/api/mcp/v1/firewalls/clickup-cascade-alpha-eu-west-1/metrics',
+  );
+  assert.equal(url.searchParams.get('region'), 'eu-west-1');
+  assert.equal(url.searchParams.get('range'), '1h');
+});
+
+test('regional findings preserve the source-attribution rollout boundary', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'list_findings',
+    arguments: { region: 'ap-southeast-2' },
+  });
+
+  assert.equal(result.isError, undefined);
+  const body = result.structuredContent as {
+    firewall: { firewall_id: string; region: string };
+    coverage: {
+      regional_attribution: {
+        historical_unattributed_findings: string;
+        inferred_or_backfilled: boolean;
+      };
+    };
+  };
+  assert.equal(body.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(body.firewall.region, 'ap-southeast-2');
+  assert.equal(
+    body.coverage.regional_attribution.historical_unattributed_findings,
+    'global_only',
+  );
+  assert.equal(body.coverage.regional_attribution.inferred_or_backfilled, false);
+});
+
+test('ambiguous default selection returns firewall_selection_required', async () => {
+  defaultSelectionAmbiguous = true;
+  const { client } = await connectedClient();
+  const result = await client.callTool({ name: 'get_firewall', arguments: {} });
+
+  assert.equal(result.isError, true);
+  assert.equal(
+    (result.structuredContent as { error: { code: string } }).error.code,
+    'firewall_selection_required',
+  );
 });
 
 test('get_schema exposes suspicious-users contract through MCP', async () => {
@@ -2159,6 +2341,34 @@ test('detail access audits metadata only and does not log payload text', async (
   }
 });
 
+test('default sensitive reads audit the canonical resolved firewall', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_finding',
+    arguments: {
+      finding_id: 'qa-find-001',
+      reason: 'Investigating default-selected ClickUp evidence.',
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(auditCalls.length, 1);
+  const audit = JSON.parse(auditCalls[0].body ?? '{}');
+  assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
+  assert.equal(audit.target_finding_id, 'qa-find-001');
+  assert.equal(audit.outcome, 'success');
+  assert.deepEqual(
+    upstreamCalls
+      .map((call) => new URL(call.url).pathname)
+      .filter((path) => path.startsWith('/api/mcp/v1/firewalls/')),
+    [
+      '/api/mcp/v1/firewalls/default',
+      '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/qa-find-001',
+    ],
+  );
+});
+
 test('failed detail reads produce an attributed error audit event', async () => {
   process.env.MCP_AUDIT_URL = 'https://audit.test/events';
   const { client } = await connectedClient();
@@ -2181,6 +2391,34 @@ test('failed detail reads produce an attributed error audit event', async () => 
   assert.equal(audit.oauth_client_id, 'dcr-test-client');
   assert.equal(audit.target_finding_id, 'missing-finding');
   assert.equal(audit.deployment_version, '321c91e-test');
+});
+
+test('failed default sensitive reads audit the canonical resolved firewall', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_finding',
+    arguments: {
+      finding_id: 'missing-finding',
+      reason: 'Investigating missing default-selected evidence.',
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(auditCalls.length, 1);
+  const audit = JSON.parse(auditCalls[0].body ?? '{}');
+  assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
+  assert.equal(audit.target_finding_id, 'missing-finding');
+  assert.equal(audit.outcome, 'error');
+  assert.deepEqual(
+    upstreamCalls
+      .map((call) => new URL(call.url).pathname)
+      .filter((path) => path.startsWith('/api/mcp/v1/firewalls/')),
+    [
+      '/api/mcp/v1/firewalls/default',
+      '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/missing-finding',
+    ],
+  );
 });
 
 test('sensitive evidence is withheld when durable audit is absent or rejects the event', async () => {

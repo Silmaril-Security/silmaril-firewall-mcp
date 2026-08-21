@@ -15,6 +15,7 @@ const RangeSchema = z.enum(['5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '
 const TriageFilterSchema = z.enum(['true_positive', 'false_positive', 'triaged', 'untriaged']);
 const GroupBySchema = z.enum(['hook', 'tool', 'class', 'triage']);
 const FirewalledIdSchema = z.string().min(1).max(256);
+const RegionSchema = z.string().regex(/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/).max(32);
 const OwnerSelectorSchema = z.string().trim().min(1).max(320).describe(
   'One owner email, API key name, or configured API key tag. Matching is case-insensitive and exact; a tag selects every key assigned to its owner.',
 );
@@ -52,6 +53,8 @@ interface FindingTotalsPayload {
     blockedMetricReady?: boolean | null;
     total?: number | null;
   };
+  firewall?: unknown;
+  coverage?: unknown;
 }
 
 const windowShape = {
@@ -94,6 +97,36 @@ const metadataShape = {
 const ownerShape = {
   owner: OwnerSelectorSchema.optional(),
 };
+
+const firewallSelectionShape = {
+  firewall_id: FirewalledIdSchema.optional().describe(
+    'Optional logical firewall ID. Omit to use the authenticated organization default. Physical IDs remain accepted for compatibility.',
+  ),
+  region: RegionSchema.optional().describe(
+    'Optional registered AWS region. Omit for the logical global firewall.',
+  ),
+};
+
+function selectedFirewallId(firewallId: string | undefined): string {
+  return firewallId ?? 'default';
+}
+
+function firewallPath(firewallId: string | undefined, suffix = ''): string {
+  return `/api/mcp/v1/firewalls/${enc(selectedFirewallId(firewallId))}${suffix}`;
+}
+
+function resolvedFirewallId(payload: unknown, fallback: string): string {
+  if (!payload || typeof payload !== 'object') return fallback;
+  const firewall = 'firewall' in payload
+    && payload.firewall
+    && typeof payload.firewall === 'object'
+    ? payload.firewall
+    : payload;
+  if (!('firewall_id' in firewall) || typeof firewall.firewall_id !== 'string') {
+    return fallback;
+  }
+  return firewall.firewall_id.trim() || fallback;
+}
 
 function metadataQueryValues(metadata: MetadataCondition[] | undefined): string[] | undefined {
   if (!metadata?.length) return undefined;
@@ -232,8 +265,13 @@ async function callFirewall<T>(
 
 async function callSensitiveFirewall<T>(
   toolName: 'get_finding' | 'get_finding_trace',
-  path: string,
-  identifiers: { firewallId: string; findingId: string; reason: string },
+  pathForFirewall: (firewallId: string) => string,
+  identifiers: {
+    firewallId: string;
+    firewallSelectionPath?: string;
+    findingId: string;
+    reason: string;
+  },
   extra: Extra,
   config: ServerConfig,
   recordActivity?: ActivityRecorder,
@@ -243,10 +281,23 @@ async function callSensitiveFirewall<T>(
   try {
     bearer = token(extra);
     assertSensitiveAuditConfigured(config);
+    let auditFirewallId = identifiers.firewallId;
+    if (identifiers.firewallSelectionPath) {
+      const selection = await firewallGetJson<unknown>({
+        path: identifiers.firewallSelectionPath,
+        token: bearer,
+        config,
+        signal: extra.signal,
+      });
+      auditFirewallId = resolvedFirewallId(selection, identifiers.firewallId);
+      if (auditFirewallId === 'default') {
+        throw new Error('Default firewall selection did not return a canonical firewall_id.');
+      }
+    }
     let payload: T;
     try {
       payload = await firewallGetJson<T>({
-        path,
+        path: pathForFirewall(auditFirewallId),
         token: bearer,
         config,
         signal: extra.signal,
@@ -254,7 +305,7 @@ async function callSensitiveFirewall<T>(
     } catch (err) {
       await auditDetailAccess({
         tool: toolName,
-        firewallId: identifiers.firewallId,
+        firewallId: auditFirewallId,
         findingId: identifiers.findingId,
         reason: identifiers.reason,
         requestId: extra.requestId,
@@ -265,7 +316,7 @@ async function callSensitiveFirewall<T>(
     }
     await auditDetailAccess({
       tool: toolName,
-      firewallId: identifiers.firewallId,
+      firewallId: resolvedFirewallId(payload, auditFirewallId),
       findingId: identifiers.findingId,
       reason: identifiers.reason,
       requestId: extra.requestId,
@@ -288,7 +339,7 @@ async function callSensitiveFirewall<T>(
 }
 
 async function callTriageFindingGroups(
-  firewallId: string,
+  firewallId: string | undefined,
   args: {
     triage?: TriageFilter;
     range?: string;
@@ -296,6 +347,7 @@ async function callTriageFindingGroups(
     endTime?: string;
     metadata?: MetadataCondition[];
     owner?: string;
+    region?: string;
   },
   extra: Extra,
   config: ServerConfig,
@@ -312,12 +364,13 @@ async function callTriageFindingGroups(
     const authenticatedToken = bearer;
     const items = await Promise.all(buckets.map(async (triage) => {
       const payload = await firewallGetJson<FindingTotalsPayload>({
-        path: pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewallId)}/findings/totals`, findingQueryParams({
+        path: pathWithQuery(firewallPath(firewallId, '/findings/totals'), findingQueryParams({
           range: args.range,
           startTime: args.startTime,
           endTime: args.endTime,
           metadata: args.metadata,
           owner: args.owner,
+          region: args.region,
           triage,
         })),
         token: authenticatedToken,
@@ -329,17 +382,27 @@ async function callTriageFindingGroups(
         triage,
         count: findingBlockedCount(payload),
         blockedMetricReady: findingBlockedMetricReady(payload),
+        firewall: payload.firewall,
+        coverage: payload.coverage,
       };
     }));
 
     const exactCounts = items.every((item) => typeof item.count === 'number');
+    const selection = items[0];
     outcome = 'success';
     return mcpResult('group_findings', {
       by: 'triage',
-      items,
+      items: items.map(({ key, triage, count, blockedMetricReady }) => ({
+        key,
+        triage,
+        count,
+        blockedMetricReady,
+      })),
       exact_counts: exactCounts,
       triaged_count: triagedCount(items, exactCounts),
       source: 'findings_totals_by_triage',
+      firewall: selection?.firewall ?? null,
+      coverage: selection?.coverage ?? null,
     });
   } catch (err) {
     return mcpErrorResult(err);
@@ -382,11 +445,13 @@ export function createFirewallMcpServer(
     title: 'Get Firewall',
     description: 'Get one authorized firewall deployment and its runtime capability envelope.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema.describe('Firewall envKey returned by list_firewalls.'),
+      ...firewallSelectionShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id }, extra) =>
-    callFirewall('get_firewall', `/api/mcp/v1/firewalls/${enc(firewall_id)}`, extra, config, recordActivity));
+  }, async ({ firewall_id, region }, extra) =>
+    callFirewall('get_firewall', pathWithQuery(firewallPath(firewall_id), {
+      region,
+    }), extra, config, recordActivity));
 
   server.registerTool('get_schema', {
     title: 'Get MCP Schema',
@@ -400,12 +465,13 @@ export function createFirewallMcpServer(
     title: 'Get Metrics',
     description: 'Read bounded operational metrics for one authorized firewall. Supports SageMaker and self-hosted operations sources.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, range, startTime, endTime }, extra) =>
-    callFirewall('get_metrics', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/metrics`, {
+  }, async ({ firewall_id, region, range, startTime, endTime }, extra) =>
+    callFirewall('get_metrics', pathWithQuery(firewallPath(firewall_id, '/metrics'), {
+      region,
       range,
       startTime,
       endTime,
@@ -415,7 +481,7 @@ export function createFirewallMcpServer(
     title: 'List Findings',
     description: 'Search authorized findings with compact previews, trusted owner or API key tag filtering, triage filters, and pagination. Does not return full payload text.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       q: z.string().max(512).optional(),
       minScore: z.number().min(0).max(1).optional(),
       hook: z.string().max(128).optional(),
@@ -431,7 +497,7 @@ export function createFirewallMcpServer(
     },
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, ...args }, extra) =>
-    callFirewall('list_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings`, findingQueryParams(args)), extra, config, recordActivity));
+    callFirewall('list_findings', pathWithQuery(firewallPath(firewall_id, '/findings'), findingQueryParams(args)), extra, config, recordActivity));
 
   server.registerTool('list_suspicious_users', {
     title: 'List Suspicious Users',
@@ -441,7 +507,7 @@ export function createFirewallMcpServer(
       'Bot-farming signals only prioritize users and do not create alerts without abuse evidence.',
     ].join(' '),
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       categories: z.array(AbuseCategorySchema).min(1).max(8).optional().describe(
         'Optional derived abuse categories. Use model_distillation and nsfw_content_abuse separately when separating distillation and NSFW abuse campaigns.',
       ),
@@ -459,7 +525,7 @@ export function createFirewallMcpServer(
     annotations: readOnlyAnnotations,
   }, async ({ firewall_id, ...args }, extra) =>
     callFirewall('list_suspicious_users', pathWithQuery(
-      `/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/users/suspicious`,
+      firewallPath(firewall_id, '/findings/users/suspicious'),
       suspiciousUsersQueryParams(args),
     ), extra, config, recordActivity));
 
@@ -467,15 +533,16 @@ export function createFirewallMcpServer(
     title: 'Get Finding Totals',
     description: 'Read bounded finding totals for one authorized firewall, optionally filtered by a trusted owner identity or API key tag. Use triage=false_positive for an exact false-positive count.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       ...triageShape,
       ...ownerShape,
       ...metadataShape,
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, triage, owner, metadata, range, startTime, endTime }, extra) =>
-    callFirewall('get_finding_totals', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/totals`, findingQueryParams({
+  }, async ({ firewall_id, region, triage, owner, metadata, range, startTime, endTime }, extra) =>
+    callFirewall('get_finding_totals', pathWithQuery(firewallPath(firewall_id, '/findings/totals'), findingQueryParams({
+      region,
       range,
       startTime,
       endTime,
@@ -488,7 +555,7 @@ export function createFirewallMcpServer(
     title: 'Group Findings',
     description: 'Read bounded finding aggregates by hook, tool, risk class, or triage verdict, optionally filtered by a trusted owner identity or API key tag. Use by=triage for exact true-positive, false-positive, and untriaged counts.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       by: GroupBySchema,
       ...triageShape,
       ...ownerShape,
@@ -496,11 +563,12 @@ export function createFirewallMcpServer(
       ...windowShape,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, by, triage, owner, metadata, range, startTime, endTime }, extra) => {
+  }, async ({ firewall_id, region, by, triage, owner, metadata, range, startTime, endTime }, extra) => {
     if (by === 'triage') {
-      return callTriageFindingGroups(firewall_id, { triage, owner, metadata, range, startTime, endTime }, extra, config, recordActivity);
+      return callTriageFindingGroups(firewall_id, { region, triage, owner, metadata, range, startTime, endTime }, extra, config, recordActivity);
     }
-    return callFirewall('group_findings', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/group`, findingQueryParams({
+    return callFirewall('group_findings', pathWithQuery(firewallPath(firewall_id, '/findings/group'), findingQueryParams({
+      region,
       by,
       range,
       startTime,
@@ -515,28 +583,36 @@ export function createFirewallMcpServer(
     title: 'Get Investigation Packet',
     description: 'Read compact non-payload evidence for reconstructing one finding: handles, previews, metrics window, runtime metadata, and trace availability.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       finding_id: FirewalledIdSchema,
     },
     annotations: readOnlyAnnotations,
-  }, async ({ firewall_id, finding_id }, extra) =>
-    callFirewall('get_investigation_packet', `/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/investigation-packet`, extra, config, recordActivity));
+  }, async ({ firewall_id, region, finding_id }, extra) =>
+    callFirewall('get_investigation_packet', pathWithQuery(
+      firewallPath(firewall_id, `/findings/${enc(finding_id)}/investigation-packet`),
+      { region },
+    ), extra, config, recordActivity));
 
   server.registerTool('get_finding', {
     title: 'Get Finding',
     description: 'Read a full authorized finding evidence bundle. Requires explicit reason and upstream detail/payload scopes.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       finding_id: FirewalledIdSchema,
       reason: ReasonSchema,
     },
     annotations: sensitiveReadAnnotations,
     _meta: sensitiveToolMeta,
-  }, async ({ firewall_id, finding_id, reason }, extra) => {
-    return callSensitiveFirewall('get_finding', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}`, {
-      reason,
-    }), {
-      firewallId: firewall_id,
+  }, async ({ firewall_id, region, finding_id, reason }, extra) => {
+    const selected = selectedFirewallId(firewall_id);
+    return callSensitiveFirewall('get_finding', (canonicalFirewallId) => pathWithQuery(
+      firewallPath(canonicalFirewallId, `/findings/${enc(finding_id)}`),
+      { reason, region },
+    ), {
+      firewallId: selected,
+      firewallSelectionPath: firewall_id
+        ? undefined
+        : pathWithQuery(firewallPath(undefined), { region }),
       findingId: finding_id,
       reason,
     }, extra, config, recordActivity);
@@ -546,17 +622,22 @@ export function createFirewallMcpServer(
     title: 'Get Finding Trace',
     description: 'Read a full authorized trace when available. Self-hosted tenants without trace source return a degraded single-event fallback with diagnostics.',
     inputSchema: {
-      firewall_id: FirewalledIdSchema,
+      ...firewallSelectionShape,
       finding_id: FirewalledIdSchema,
       reason: ReasonSchema,
     },
     annotations: sensitiveReadAnnotations,
     _meta: sensitiveToolMeta,
-  }, async ({ firewall_id, finding_id, reason }, extra) => {
-    return callSensitiveFirewall('get_finding_trace', pathWithQuery(`/api/mcp/v1/firewalls/${enc(firewall_id)}/findings/${enc(finding_id)}/trace`, {
-      reason,
-    }), {
-      firewallId: firewall_id,
+  }, async ({ firewall_id, region, finding_id, reason }, extra) => {
+    const selected = selectedFirewallId(firewall_id);
+    return callSensitiveFirewall('get_finding_trace', (canonicalFirewallId) => pathWithQuery(
+      firewallPath(canonicalFirewallId, `/findings/${enc(finding_id)}/trace`),
+      { reason, region },
+    ), {
+      firewallId: selected,
+      firewallSelectionPath: firewall_id
+        ? undefined
+        : pathWithQuery(firewallPath(undefined), { region }),
       findingId: finding_id,
       reason,
     }, extra, config, recordActivity);
