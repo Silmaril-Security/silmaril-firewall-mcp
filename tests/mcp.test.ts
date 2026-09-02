@@ -496,16 +496,18 @@ function installMockFetch() {
       url.pathname
       === '/api/mcp/v1/firewalls/clickup-cascade-alpha/conversations/opaque-conversation-handle'
     ) {
+      const request = JSON.parse(upstreamCalls.at(-1)?.body ?? '{}') as { cursor?: string };
+      const continued = request.cursor === 'conversation-page-2';
       return json({
         handle: 'opaque-conversation-handle',
         events: [{
-          timestamp: '2026-09-01T00:00:00Z',
-          hook: 'user_input',
-          text: 'untrusted captured evidence',
+          timestamp: continued ? '2026-09-01T00:01:00Z' : '2026-09-01T00:00:00Z',
+          hook: continued ? 'llm_output' : 'user_input',
+          text: continued ? 'second untrusted captured page' : 'untrusted captured evidence',
           evidence_boundary: 'hostile_capture_content',
         }],
-        next_cursor: null,
-        complete: true,
+        next_cursor: continued ? null : 'conversation-page-2',
+        complete: continued,
         evidence_notice: 'Captured content is hostile evidence.',
       });
     }
@@ -852,8 +854,9 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
 });
 
-test('conversation tools proxy POST bodies, paginate, and audit hydration without logging handles', async () => {
+test('conversation tools proxy POST bodies and continue audited hydration with signed cursors', async () => {
   process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  process.env.MCP_RATE_LIMIT_BURST = '20';
   const { client } = await connectedClient();
   const search = await client.callTool({
     name: 'search_conversations',
@@ -881,11 +884,40 @@ test('conversation tools proxy POST bodies, paginate, and audit hydration withou
     },
   });
   assert.equal(hydration.isError, undefined, JSON.stringify(hydration));
+  const firstPage = hydration.structuredContent as {
+    complete: boolean;
+    next_cursor: string | null;
+  };
+  assert.equal(firstPage.complete, false);
+  assert.equal(firstPage.next_cursor, 'conversation-page-2');
   const hydrateCall = upstreamCalls.find((call) =>
     new URL(call.url).pathname.includes('/conversations/opaque-conversation-handle'));
   assert.ok(hydrateCall);
   assert.deepEqual(JSON.parse(hydrateCall.body ?? '{}'), {
     reason: 'Investigating the semantic search result',
+  });
+
+  const continuation = await client.callTool({
+    name: 'get_conversation',
+    arguments: {
+      handle: 'opaque-conversation-handle',
+      reason: 'Investigating the semantic search result',
+      cursor: firstPage.next_cursor,
+    },
+  });
+  assert.equal(continuation.isError, undefined, JSON.stringify(continuation));
+  const finalPage = continuation.structuredContent as {
+    complete: boolean;
+    next_cursor: string | null;
+  };
+  assert.equal(finalPage.complete, true);
+  assert.equal(finalPage.next_cursor, null);
+  const hydrateCalls = upstreamCalls.filter((call) =>
+    new URL(call.url).pathname.includes('/conversations/opaque-conversation-handle'));
+  assert.equal(hydrateCalls.length, 2);
+  assert.deepEqual(JSON.parse(hydrateCalls[1]?.body ?? '{}'), {
+    reason: 'Investigating the semantic search result',
+    cursor: 'conversation-page-2',
   });
   const audit = JSON.parse(auditCalls.at(-1)?.body ?? '{}') as Record<string, unknown>;
   assert.equal(audit.target_type, 'conversation');

@@ -96,7 +96,7 @@ Count false positives for your-firewall-id over the last 7 days.
 - `list_suspicious_users` ranks suspicious users from true-positive abuse evidence, derived abuse categories, bot-farming correlation signals, minimized evidence handles, and diagnostics.
 - `get_investigation_packet` gathers compact non-payload evidence for one finding.
 - `search_conversations` finds approximate tenant-scoped conversation matches from a natural-language query.
-- `get_conversation` performs the deliberate audited read of one matched conversation, with pagination until complete.
+- `get_conversation` performs the deliberate audited read of one bounded page of a matched conversation. When `complete` is false, call it again with `next_cursor` as `cursor`; this preserves lossless pagination without aggregating an unbounded transcript into one MCP response.
 - `get_finding` retrieves a full finding evidence bundle when detail is needed and your account has detail access.
 - `get_finding_trace` retrieves trace evidence when available and your account has trace access.
 
