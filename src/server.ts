@@ -205,6 +205,16 @@ function mcpResult(toolName: string, payload: unknown) {
   };
 }
 
+// firewall-ui may spend up to 15 seconds waiting for Athena hydration before
+// cancelling it and returning a stable response. Leave enough time for that
+// cancellation and response to reach the MCP client without widening the
+// default timeout for every other tool.
+const CONVERSATION_UPSTREAM_TIMEOUT_MS = 25_000;
+
+function conversationUpstreamTimeoutMs(config: ServerConfig): number {
+  return Math.max(config.upstreamTimeoutMs, CONVERSATION_UPSTREAM_TIMEOUT_MS);
+}
+
 async function callFirewallPost<T>(
   toolName: string,
   path: string,
@@ -212,6 +222,7 @@ async function callFirewallPost<T>(
   extra: Extra,
   config: ServerConfig,
   recordActivity?: ActivityRecorder,
+  timeoutMs?: number,
 ) {
   let bearer: string | null = null;
   let outcome: McpActivityOutcome = 'error';
@@ -223,6 +234,7 @@ async function callFirewallPost<T>(
       token: bearer,
       config,
       signal: extra.signal,
+      timeoutMs,
     });
     outcome = 'success';
     return mcpResult(toolName, payload);
@@ -274,6 +286,7 @@ async function callConversationHydration(
         token: bearer,
         config,
         signal: extra.signal,
+        timeoutMs: conversationUpstreamTimeoutMs(config),
       });
     } catch (err) {
       await auditDetailAccess({
@@ -729,6 +742,7 @@ export function createFirewallMcpServer(
       extra,
       config,
       recordActivity,
+      conversationUpstreamTimeoutMs(config),
     ));
 
   server.registerTool('get_conversation', {

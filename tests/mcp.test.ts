@@ -854,9 +854,18 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
 });
 
-test('conversation tools proxy POST bodies and continue audited hydration with signed cursors', async () => {
+test('conversation tools proxy POST bodies and continue audited hydration with signed cursors', async (t) => {
   process.env.MCP_AUDIT_URL = 'https://audit.test/events';
   process.env.MCP_RATE_LIMIT_BURST = '20';
+  const timeoutCalls: number[] = [];
+  const originalTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = ((milliseconds: number) => {
+    timeoutCalls.push(milliseconds);
+    return originalTimeout(milliseconds);
+  }) as typeof AbortSignal.timeout;
+  t.after(() => {
+    AbortSignal.timeout = originalTimeout;
+  });
   const { client } = await connectedClient();
   const search = await client.callTool({
     name: 'search_conversations',
@@ -923,6 +932,10 @@ test('conversation tools proxy POST bodies and continue audited hydration with s
   assert.equal(audit.target_type, 'conversation');
   assert.equal(typeof audit.target_reference_sha256, 'string');
   assert.equal(JSON.stringify(audit).includes('opaque-conversation-handle'), false);
+  assert.ok(
+    timeoutCalls.filter((milliseconds) => milliseconds === 25_000).length >= 3,
+    'search and both hydration pages must outlast the firewall-ui Athena timeout',
+  );
 });
 
 test('omitted firewall selection resolves globally and preserves partial coverage', async () => {

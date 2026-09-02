@@ -15,6 +15,7 @@ export interface FirewallRequestOptions {
   token: string;
   config: ServerConfig;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export interface FirewallPostRequestOptions extends FirewallRequestOptions {
@@ -62,6 +63,7 @@ export async function firewallGetJson<T>({
   token,
   config,
   signal,
+  timeoutMs,
 }: FirewallRequestOptions): Promise<T> {
   const response = await fetch(joinPath(config.firewallUiBaseUrl, path), {
     method: 'GET',
@@ -73,7 +75,7 @@ export async function firewallGetJson<T>({
     redirect: 'error',
     signal: AbortSignal.any([
       signal ?? new AbortController().signal,
-      AbortSignal.timeout(config.upstreamTimeoutMs),
+      AbortSignal.timeout(timeoutMs ?? config.upstreamTimeoutMs),
     ]),
   });
 
@@ -106,6 +108,7 @@ export async function firewallPostJson<T>({
   token,
   config,
   signal,
+  timeoutMs,
   body,
 }: FirewallPostRequestOptions): Promise<T> {
   const response = await fetch(joinPath(config.firewallUiBaseUrl, path), {
@@ -120,7 +123,7 @@ export async function firewallPostJson<T>({
     redirect: 'error',
     signal: AbortSignal.any([
       signal ?? new AbortController().signal,
-      AbortSignal.timeout(config.upstreamTimeoutMs),
+      AbortSignal.timeout(timeoutMs ?? config.upstreamTimeoutMs),
     ]),
   });
   const text = await readBoundedText(response, config.maxResponseBytes);
