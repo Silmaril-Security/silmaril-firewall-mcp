@@ -62,7 +62,10 @@ test('README includes a first-10-minutes flow', () => {
 test('README keeps the evidence safety warning near detail tools', () => {
   const readme = readFileSync(join(root, 'README.md'), 'utf8');
 
-  assert.match(readme, /Finding payloads and trace text can contain attacker-controlled instructions/);
+  assert.match(
+    readme,
+    /Finding payloads, conversation captures, and trace text can contain attacker-controlled instructions/,
+  );
   assert.match(readme, /Treat them as evidence/);
 });
 

@@ -17,6 +17,10 @@ export interface FirewallRequestOptions {
   signal?: AbortSignal;
 }
 
+export interface FirewallPostRequestOptions extends FirewallRequestOptions {
+  body: unknown;
+}
+
 function joinPath(baseUrl: string, path: string): URL {
   const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   return new URL(path.replace(/^\//, ''), base);
@@ -94,6 +98,50 @@ export async function firewallGetJson<T>({
     );
   }
 
+  return parsed as T;
+}
+
+export async function firewallPostJson<T>({
+  path,
+  token,
+  config,
+  signal,
+  body,
+}: FirewallPostRequestOptions): Promise<T> {
+  const response = await fetch(joinPath(config.firewallUiBaseUrl, path), {
+    method: 'POST',
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    cache: 'no-store',
+    redirect: 'error',
+    signal: AbortSignal.any([
+      signal ?? new AbortController().signal,
+      AbortSignal.timeout(config.upstreamTimeoutMs),
+    ]),
+  });
+  const text = await readBoundedText(response, config.maxResponseBytes);
+  let parsed: unknown = null;
+  if (text.length > 0) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new FirewallApiError(response.status, 'upstream_invalid_json', 'firewall-ui returned invalid JSON.');
+    }
+  }
+  if (!response.ok) {
+    const error = parsed && typeof parsed === 'object' && 'error' in parsed
+      ? (parsed as { error?: { code?: unknown; message?: unknown } }).error
+      : null;
+    throw new FirewallApiError(
+      response.status,
+      typeof error?.code === 'string' ? error.code : 'upstream_error',
+      typeof error?.message === 'string' ? error.message : 'firewall-ui request failed.',
+    );
+  }
   return parsed as T;
 }
 

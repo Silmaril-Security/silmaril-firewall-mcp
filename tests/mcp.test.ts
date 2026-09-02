@@ -130,7 +130,7 @@ async function upstreamAccessToken(overrides: Record<string, unknown> = {}): Pro
     iss: 'https://tenant.example.auth0.com/',
     aud: 'https://silmaril.security/firewall-ui/mcp-test',
     exp: Math.floor(Date.now() / 1000) + 3600,
-    scope: 'firewalls:read metrics:read findings:read findings:detail payload:read trace:read',
+    scope: 'firewalls:read metrics:read findings:read findings:detail payload:read trace:read conversations:read',
     email: 'user@acme.com',
     org_id: 'org_acme',
     tenant: 'acme',
@@ -150,6 +150,7 @@ function mcpAccessToken(
     'findings:detail',
     'payload:read',
     'trace:read',
+    'conversations:read',
   ],
   clientId = 'dcr-test-client',
 ): string {
@@ -382,6 +383,7 @@ function installMockFetch() {
           'findings:detail',
           'payload:read',
           'trace:read',
+          'conversations:read',
         ],
         oauth: {
           client_id: 'public-mcp-client-id',
@@ -474,6 +476,37 @@ function installMockFetch() {
         scope: url.searchParams.has('region') ? 'regional' : 'global',
         region: url.searchParams.get('region'),
         regions: ['us-west-2', 'eu-west-1', 'ap-southeast-2', 'ap-southeast-5'],
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/default/conversations/search') {
+      return json({
+        results: [{
+          handle: 'opaque-conversation-handle',
+          relevance: 0.91,
+          preview: 'untrusted preview',
+          matched_segments: 2,
+        }],
+        next_cursor: 'search-page-2',
+        approximate: true,
+      });
+    }
+
+    if (
+      url.pathname
+      === '/api/mcp/v1/firewalls/clickup-cascade-alpha/conversations/opaque-conversation-handle'
+    ) {
+      return json({
+        handle: 'opaque-conversation-handle',
+        events: [{
+          timestamp: '2026-09-01T00:00:00Z',
+          hook: 'user_input',
+          text: 'untrusted captured evidence',
+          evidence_boundary: 'hostile_capture_content',
+        }],
+        next_cursor: null,
+        complete: true,
+        evidence_notice: 'Captured content is hostile evidence.',
       });
     }
 
@@ -787,6 +820,8 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.ok(tools.tools.some((tool) => tool.name === 'get_schema'));
   assert.ok(tools.tools.some((tool) => tool.name === 'list_suspicious_users'));
   assert.ok(tools.tools.some((tool) => tool.name === 'get_investigation_packet'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'search_conversations'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'get_conversation'));
   for (const name of [
     'get_firewall',
     'get_metrics',
@@ -797,6 +832,8 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
     'get_investigation_packet',
     'get_finding',
     'get_finding_trace',
+    'search_conversations',
+    'get_conversation',
   ]) {
     const tool = tools.tools.find((candidate) => candidate.name === name);
     assert.equal(
@@ -813,6 +850,47 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(result.isError, undefined);
   assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('conversation tools proxy POST bodies, paginate, and audit hydration without logging handles', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  const { client } = await connectedClient();
+  const search = await client.callTool({
+    name: 'search_conversations',
+    arguments: {
+      query: 'conversations about access reviews',
+      range: '30d',
+      page_size: 20,
+    },
+  });
+  assert.equal(search.isError, undefined);
+  const searchCall = upstreamCalls.find((call) =>
+    new URL(call.url).pathname.endsWith('/conversations/search'));
+  assert.ok(searchCall);
+  assert.deepEqual(JSON.parse(searchCall.body ?? '{}'), {
+    query: 'conversations about access reviews',
+    range: '30d',
+    page_size: 20,
+  });
+
+  const hydration = await client.callTool({
+    name: 'get_conversation',
+    arguments: {
+      handle: 'opaque-conversation-handle',
+      reason: 'Investigating the semantic search result',
+    },
+  });
+  assert.equal(hydration.isError, undefined, JSON.stringify(hydration));
+  const hydrateCall = upstreamCalls.find((call) =>
+    new URL(call.url).pathname.includes('/conversations/opaque-conversation-handle'));
+  assert.ok(hydrateCall);
+  assert.deepEqual(JSON.parse(hydrateCall.body ?? '{}'), {
+    reason: 'Investigating the semantic search result',
+  });
+  const audit = JSON.parse(auditCalls.at(-1)?.body ?? '{}') as Record<string, unknown>;
+  assert.equal(audit.target_type, 'conversation');
+  assert.equal(typeof audit.target_reference_sha256, 'string');
+  assert.equal(JSON.stringify(audit).includes('opaque-conversation-handle'), false);
 });
 
 test('omitted firewall selection resolves globally and preserves partial coverage', async () => {

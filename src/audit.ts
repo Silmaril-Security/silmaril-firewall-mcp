@@ -1,12 +1,14 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ServerConfig } from './config';
 import { FirewallApiError } from './firewall-ui-client';
 import type { McpActorContext } from './auth-context';
 
 export interface DetailAuditEvent {
-  tool: 'get_finding' | 'get_finding_trace';
+  tool: 'get_finding' | 'get_finding_trace' | 'get_conversation';
   firewallId: string;
-  findingId: string;
+  target:
+    | { type: 'finding'; id: string }
+    | { type: 'conversation'; id: string };
   reason: string;
   requestId: string | number;
   outcome: 'success' | 'error';
@@ -43,7 +45,14 @@ export async function auditDetailAccess(event: DetailAuditEvent, config: ServerC
         token_id: event.actor.tokenId,
         tool_name: event.tool,
         target_firewall_id: event.firewallId,
-        target_finding_id: event.findingId,
+        ...(event.target.type === 'finding'
+          ? { target_finding_id: event.target.id }
+          : {
+              target_type: 'conversation',
+              target_reference_sha256: createHash('sha256')
+                .update(event.target.id)
+                .digest('hex'),
+            }),
         reason: event.reason,
         outcome: event.outcome,
         correlation_id: String(event.requestId),
