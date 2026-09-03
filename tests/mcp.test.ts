@@ -130,7 +130,7 @@ async function upstreamAccessToken(overrides: Record<string, unknown> = {}): Pro
     iss: 'https://tenant.example.auth0.com/',
     aud: 'https://silmaril.security/firewall-ui/mcp-test',
     exp: Math.floor(Date.now() / 1000) + 3600,
-    scope: 'firewalls:read metrics:read findings:read findings:detail payload:read trace:read',
+    scope: 'firewalls:read metrics:read findings:read findings:detail payload:read trace:read conversations:read',
     email: 'user@acme.com',
     org_id: 'org_acme',
     tenant: 'acme',
@@ -150,6 +150,7 @@ function mcpAccessToken(
     'findings:detail',
     'payload:read',
     'trace:read',
+    'conversations:read',
   ],
   clientId = 'dcr-test-client',
 ): string {
@@ -382,6 +383,7 @@ function installMockFetch() {
           'findings:detail',
           'payload:read',
           'trace:read',
+          'conversations:read',
         ],
         oauth: {
           client_id: 'public-mcp-client-id',
@@ -474,6 +476,39 @@ function installMockFetch() {
         scope: url.searchParams.has('region') ? 'regional' : 'global',
         region: url.searchParams.get('region'),
         regions: ['us-west-2', 'eu-west-1', 'ap-southeast-2', 'ap-southeast-5'],
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/default/conversations/search') {
+      return json({
+        results: [{
+          handle: 'opaque-conversation-handle',
+          relevance: 0.91,
+          preview: 'untrusted preview',
+          matched_segments: 2,
+        }],
+        next_cursor: 'search-page-2',
+        approximate: true,
+      });
+    }
+
+    if (
+      url.pathname
+      === '/api/mcp/v1/firewalls/clickup-cascade-alpha/conversations/opaque-conversation-handle'
+    ) {
+      const request = JSON.parse(upstreamCalls.at(-1)?.body ?? '{}') as { cursor?: string };
+      const continued = request.cursor === 'conversation-page-2';
+      return json({
+        handle: 'opaque-conversation-handle',
+        events: [{
+          timestamp: continued ? '2026-09-01T00:01:00Z' : '2026-09-01T00:00:00Z',
+          hook: continued ? 'llm_output' : 'user_input',
+          text: continued ? 'second untrusted captured page' : 'untrusted captured evidence',
+          evidence_boundary: 'hostile_capture_content',
+        }],
+        next_cursor: continued ? null : 'conversation-page-2',
+        complete: continued,
+        evidence_notice: 'Captured content is hostile evidence.',
       });
     }
 
@@ -787,6 +822,8 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.ok(tools.tools.some((tool) => tool.name === 'get_schema'));
   assert.ok(tools.tools.some((tool) => tool.name === 'list_suspicious_users'));
   assert.ok(tools.tools.some((tool) => tool.name === 'get_investigation_packet'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'search_conversations'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'get_conversation'));
   for (const name of [
     'get_firewall',
     'get_metrics',
@@ -797,6 +834,8 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
     'get_investigation_packet',
     'get_finding',
     'get_finding_trace',
+    'search_conversations',
+    'get_conversation',
   ]) {
     const tool = tools.tools.find((candidate) => candidate.name === name);
     assert.equal(
@@ -813,6 +852,90 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(result.isError, undefined);
   assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('conversation tools proxy POST bodies and continue audited hydration with signed cursors', async (t) => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  process.env.MCP_RATE_LIMIT_BURST = '20';
+  const timeoutCalls: number[] = [];
+  const originalTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = ((milliseconds: number) => {
+    timeoutCalls.push(milliseconds);
+    return originalTimeout(milliseconds);
+  }) as typeof AbortSignal.timeout;
+  t.after(() => {
+    AbortSignal.timeout = originalTimeout;
+  });
+  const { client } = await connectedClient();
+  const search = await client.callTool({
+    name: 'search_conversations',
+    arguments: {
+      query: 'conversations about access reviews',
+      range: '30d',
+      page_size: 20,
+    },
+  });
+  assert.equal(search.isError, undefined);
+  const searchCall = upstreamCalls.find((call) =>
+    new URL(call.url).pathname.endsWith('/conversations/search'));
+  assert.ok(searchCall);
+  assert.deepEqual(JSON.parse(searchCall.body ?? '{}'), {
+    query: 'conversations about access reviews',
+    range: '30d',
+    page_size: 20,
+  });
+
+  const hydration = await client.callTool({
+    name: 'get_conversation',
+    arguments: {
+      handle: 'opaque-conversation-handle',
+      reason: 'Investigating the semantic search result',
+    },
+  });
+  assert.equal(hydration.isError, undefined, JSON.stringify(hydration));
+  const firstPage = hydration.structuredContent as {
+    complete: boolean;
+    next_cursor: string | null;
+  };
+  assert.equal(firstPage.complete, false);
+  assert.equal(firstPage.next_cursor, 'conversation-page-2');
+  const hydrateCall = upstreamCalls.find((call) =>
+    new URL(call.url).pathname.includes('/conversations/opaque-conversation-handle'));
+  assert.ok(hydrateCall);
+  assert.deepEqual(JSON.parse(hydrateCall.body ?? '{}'), {
+    reason: 'Investigating the semantic search result',
+  });
+
+  const continuation = await client.callTool({
+    name: 'get_conversation',
+    arguments: {
+      handle: 'opaque-conversation-handle',
+      reason: 'Investigating the semantic search result',
+      cursor: firstPage.next_cursor,
+    },
+  });
+  assert.equal(continuation.isError, undefined, JSON.stringify(continuation));
+  const finalPage = continuation.structuredContent as {
+    complete: boolean;
+    next_cursor: string | null;
+  };
+  assert.equal(finalPage.complete, true);
+  assert.equal(finalPage.next_cursor, null);
+  const hydrateCalls = upstreamCalls.filter((call) =>
+    new URL(call.url).pathname.includes('/conversations/opaque-conversation-handle'));
+  assert.equal(hydrateCalls.length, 2);
+  assert.deepEqual(JSON.parse(hydrateCalls[1]?.body ?? '{}'), {
+    reason: 'Investigating the semantic search result',
+    cursor: 'conversation-page-2',
+  });
+  const audit = JSON.parse(auditCalls.at(-1)?.body ?? '{}') as Record<string, unknown>;
+  assert.equal(audit.target_type, 'conversation');
+  assert.equal(typeof audit.target_reference_sha256, 'string');
+  assert.equal(JSON.stringify(audit).includes('opaque-conversation-handle'), false);
+  assert.ok(
+    timeoutCalls.filter((milliseconds) => milliseconds === 25_000).length >= 3,
+    'search and both hydration pages must outlast the firewall-ui Athena timeout',
+  );
 });
 
 test('omitted firewall selection resolves globally and preserves partial coverage', async () => {

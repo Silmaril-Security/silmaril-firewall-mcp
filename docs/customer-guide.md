@@ -33,8 +33,9 @@ Start broad, then narrow:
 4. Use `get_metrics`, `get_finding_totals`, and `group_findings` for posture and trend questions.
 5. Use `list_findings` for compact finding previews.
 6. Use `list_suspicious_users` for user-level abuse review.
-7. Use `get_investigation_packet` before opening full payloads or traces.
-8. Use `get_finding` or `get_finding_trace` only when compact evidence is insufficient and your account has detail access.
+7. Use `search_conversations` for natural-language discovery when the firewall exposes that capability.
+8. Use `get_investigation_packet` before opening full finding payloads or traces.
+9. Use `get_conversation`, `get_finding`, or `get_finding_trace` only when compact evidence is insufficient and your account has detail access.
 
 Ask the agent to cite Firewall IDs, finding IDs, evidence IDs, request IDs, and trace diagnostics. That makes the answer reviewable without copying sensitive payload text into the conversation.
 

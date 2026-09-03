@@ -50,6 +50,8 @@ const TOOL_SCOPES: Record<string, readonly string[]> = {
   get_investigation_packet: ['findings:read'],
   get_finding: ['findings:detail', 'payload:read'],
   get_finding_trace: ['trace:read'],
+  search_conversations: ['conversations:read'],
+  get_conversation: ['trace:read'],
   get_mcp_adoption_summary: ['firewalls:read'],
   list_mcp_activity: ['firewalls:read'],
 };
@@ -60,6 +62,8 @@ const TOOL_COSTS: Record<string, number> = {
   get_investigation_packet: 2,
   get_finding: 2,
   get_finding_trace: 2,
+  search_conversations: 3,
+  get_conversation: 3,
 };
 
 function json(

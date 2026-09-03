@@ -85,7 +85,8 @@ disabled on every credential-bearing server-to-server request.
 
 When a client omits `scope` during registration, it receives aggregate scopes
 only: `firewalls:read`, `metrics:read`, and `findings:read`. Full finding and
-trace access therefore requires explicit scope consent. Refresh credentials are
+trace access therefore requires explicit scope consent. Semantic conversation
+discovery likewise requires explicit `conversations:read` consent. Refresh credentials are
 bound to the dynamic client and original resource, refresh requests cannot
 expand scopes, and the bridge requires Auth0 refresh-token rotation before
 returning a replacement credential.
