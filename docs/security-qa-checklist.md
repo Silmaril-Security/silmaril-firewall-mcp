@@ -15,6 +15,8 @@
 - The OAuth bridge sends `MCP_AUTH0_ORGANIZATION` only for explicit single-org deployments and rejects non-`org_...` organization values locally.
 - `firewall-ui` rejects wrong issuer, wrong audience, expiry, missing org, missing tenant, missing admin claim, and missing scopes.
 - Cross-tenant resource probes are re-scoped through `firewall-ui` deployment lookup and return deterministic `404`.
+- Managed-pilot authority is derived from the verified Auth0 organization and tenant. Every currently active runtime key bound to that pair is included; caller-supplied tenant or key selectors cannot widen the boundary.
+- Firewall-scoped upstream responses carry a non-sensitive `data_scope` attestation. The MCP proxy fails closed when it is missing and rejects pilot attestations that do not match the authenticated tenant.
 - `/admin/mcp` has separate protected-resource metadata and calls the `firewall-ui` admin-access endpoint before constructing or exposing its two tools.
 
 ## Tool Surface
@@ -31,6 +33,7 @@
 - JSON-RPC batches, non-JSON requests, and request bodies over `MCP_MAX_REQUEST_BYTES` are rejected before MCP processing.
 - Per-actor/client weighted quotas return deterministic `429` before upstream fan-out; Vercel platform rate controls provide the distributed outer limit.
 - MCP response byte size is capped by `MCP_MAX_RESPONSE_BYTES`.
+- Managed-pilot conversation search uses the existing shared vector index with mandatory scope-schema, scope-ID, generation, time, and active API-key filters. Hydration rechecks the scope-bound control record and applies the same active API-key set to Athena.
 - Public activity telemetry emits once per logical handler call and excludes initialization, discovery, input validation failures, and all admin MCP calls.
 
 ## Sensitive Data Handling
@@ -57,6 +60,7 @@
 - `firewall-ui`: lint, typecheck, unit tests, and targeted MCP bearer/evidence tests.
 - MCP repo: lint, typecheck, SDK Streamable HTTP tests, suspicious-user category/schema tests, and build.
 - Auth0 smoke: one org-scoped user can list/search/get only that tenant; another tenant envKey returns denied/not found.
+- Managed-pilot smoke: rotate the active-key set, verify old cursors fail closed, verify cross-pilot handles return not found, and confirm metrics, rollups, findings, conversation search, and hydration contain only the selected pilot's key set.
 - Security smoke: malformed/direct/wrong-resource MCP credentials, wrong upstream audience/issuer/signature, expiry, missing org, missing scope, callback substitution, refresh replay, batch/oversize requests, quota exhaustion, and cross-tenant IDOR attempts.
 - Proof artifacts: golden MCP transcript, capability matrix, quickstart, evaluator walkthrough, and dogfood scorecard.
 - Auth0 smoke includes visually confirming that hosted consent shows the requesting dynamic client name and callback before approval.

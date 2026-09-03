@@ -4,6 +4,8 @@ Silmaril Firewall monitors AI application traffic at runtime and records securit
 
 The Silmaril Firewall MCP server lets an agent read that evidence from your authorized tenant. It is read-only, tenant-scoped, and backed by Silmaril's `firewall-ui` API. The MCP server does not connect directly to your AWS account, database, traces, or runtime infrastructure.
 
+For managed pilots, the boundary is the authenticated Auth0 organization and tenant slug plus every currently active API key bound to that pair. Findings, metrics, rollups, conversation search, and conversation hydration all use that server-derived boundary. Callers cannot supply or widen it. Conversation vectors remain in the shared deployment index and are filtered by tenant scope and active API-key identity; no pilot-specific index is required. Firewall responses include a non-sensitive `data_scope` attestation, and this MCP proxy fails closed if that attestation is missing or names a different pilot tenant.
+
 Use it when you want an agent to answer questions like:
 
 - Which Firewall deployments can I access?
