@@ -14,6 +14,7 @@ import type { QueryParams } from './firewall-ui-client';
 import type { ServerConfig } from './config';
 import type { McpActivityEvent, McpActivityOutcome } from './activity';
 import { actorContext, downstreamToken } from './auth-context';
+import type { McpActorContext } from './auth-context';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
@@ -195,7 +196,114 @@ function triagedCount(
     .reduce((sum, item) => sum + (item.count ?? 0), 0);
 }
 
-function mcpResult(toolName: string, payload: unknown) {
+interface DataScopeAttestation {
+  kind: 'pilot_tenant' | 'deployment';
+  firewall_id: string;
+  tenant: string;
+}
+
+const TENANT_SCOPED_TOOLS = new Set([
+  'list_firewalls',
+  'get_firewall',
+  'get_metrics',
+  'list_findings',
+  'list_suspicious_users',
+  'get_finding_totals',
+  'group_findings',
+  'get_investigation_packet',
+  'search_conversations',
+  'get_conversation',
+  'get_finding',
+  'get_finding_trace',
+]);
+
+function dataScope(value: unknown): DataScopeAttestation | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    (candidate.kind !== 'pilot_tenant' && candidate.kind !== 'deployment')
+    || typeof candidate.firewall_id !== 'string'
+    || !candidate.firewall_id
+    || typeof candidate.tenant !== 'string'
+    || !candidate.tenant
+  ) {
+    return null;
+  }
+  return candidate as unknown as DataScopeAttestation;
+}
+
+function scopeAttestations(toolName: string, payload: unknown): DataScopeAttestation[] {
+  if (!TENANT_SCOPED_TOOLS.has(toolName)) return [];
+  if (!payload || typeof payload !== 'object') {
+    throw new FirewallApiError(
+      502,
+      'upstream_scope_unverified',
+      'firewall-ui response did not include a verified data scope.',
+    );
+  }
+  const record = payload as Record<string, unknown>;
+  if (toolName === 'list_firewalls') {
+    const items = Array.isArray(record.items) ? record.items : null;
+    if (!items) {
+      throw new FirewallApiError(
+        502,
+        'upstream_scope_unverified',
+        'firewall-ui response did not include a verified data scope.',
+      );
+    }
+    const scopes = items.map((item) => (
+      dataScope((item as Record<string, unknown> | null)?.data_scope)
+    ));
+    if (scopes.some((scope) => scope === null)) {
+      throw new FirewallApiError(
+        502,
+        'upstream_scope_unverified',
+        'firewall-ui response did not include a verified data scope.',
+      );
+    }
+    return scopes as DataScopeAttestation[];
+  }
+  const firewall = record.firewall;
+  const scope = dataScope(record.data_scope)
+    ?? dataScope(
+      firewall && typeof firewall === 'object'
+        ? (firewall as Record<string, unknown>).data_scope
+        : null,
+    );
+  if (!scope) {
+    throw new FirewallApiError(
+      502,
+      'upstream_scope_unverified',
+      'firewall-ui response did not include a verified data scope.',
+    );
+  }
+  return [scope];
+}
+
+function assertTenantScope(
+  toolName: string,
+  payload: unknown,
+  actor: McpActorContext,
+): DataScopeAttestation[] {
+  const scopes = scopeAttestations(toolName, payload);
+  for (const scope of scopes) {
+    if (scope.kind === 'pilot_tenant' && scope.tenant !== actor.tenant) {
+      throw new FirewallApiError(
+        502,
+        'upstream_scope_mismatch',
+        'firewall-ui response data scope did not match the authenticated tenant.',
+      );
+    }
+  }
+  return scopes;
+}
+
+function mcpResult(
+  toolName: string,
+  payload: unknown,
+  actor: McpActorContext,
+) {
+  assertTenantScope(toolName, payload, actor);
   return {
     structuredContent: payload as Record<string, unknown>,
     content: [{
@@ -236,8 +344,9 @@ async function callFirewallPost<T>(
       signal: extra.signal,
       timeoutMs,
     });
+    const result = mcpResult(toolName, payload, actorContext(extra.authInfo));
     outcome = 'success';
-    return mcpResult(toolName, payload);
+    return result;
   } catch (err) {
     return mcpErrorResult(err);
   } finally {
@@ -279,6 +388,7 @@ async function callConversationHydration(
       }
     }
     let payload: unknown;
+    let result;
     try {
       payload = await firewallPostJson({
         path: firewallPath(canonicalFirewallId, `/conversations/${enc(handle)}`),
@@ -288,6 +398,11 @@ async function callConversationHydration(
         signal: extra.signal,
         timeoutMs: conversationUpstreamTimeoutMs(config),
       });
+      result = mcpResult(
+        'get_conversation',
+        payload,
+        actorContext(extra.authInfo),
+      );
     } catch (err) {
       await auditDetailAccess({
         tool: 'get_conversation',
@@ -310,7 +425,7 @@ async function callConversationHydration(
       actor: actorContext(extra.authInfo),
     }, config, extra.signal);
     outcome = 'success';
-    return mcpResult('get_conversation', payload);
+    return result;
   } catch (err) {
     return mcpErrorResult(err);
   } finally {
@@ -374,8 +489,9 @@ async function callFirewall<T>(
       config,
       signal: extra.signal,
     });
+    const result = mcpResult(toolName, payload, actorContext(extra.authInfo));
     outcome = 'success';
-    return mcpResult(toolName, payload);
+    return result;
   } catch (err) {
     return mcpErrorResult(err);
   } finally {
@@ -421,6 +537,7 @@ async function callSensitiveFirewall<T>(
       }
     }
     let payload: T;
+    let result;
     try {
       payload = await firewallGetJson<T>({
         path: pathForFirewall(auditFirewallId),
@@ -428,6 +545,7 @@ async function callSensitiveFirewall<T>(
         config,
         signal: extra.signal,
       });
+      result = mcpResult(toolName, payload, actorContext(extra.authInfo));
     } catch (err) {
       await auditDetailAccess({
         tool: toolName,
@@ -450,7 +568,7 @@ async function callSensitiveFirewall<T>(
       actor: actorContext(extra.authInfo),
     }, config, extra.signal);
     outcome = 'success';
-    return mcpResult(toolName, payload);
+    return result;
   } catch (err) {
     return mcpErrorResult(err);
   } finally {
@@ -488,6 +606,7 @@ async function callTriageFindingGroups(
   try {
     bearer = token(extra);
     const authenticatedToken = bearer;
+    const actor = actorContext(extra.authInfo);
     const items = await Promise.all(buckets.map(async (triage) => {
       const payload = await firewallGetJson<FindingTotalsPayload>({
         path: pathWithQuery(firewallPath(firewallId, '/findings/totals'), findingQueryParams({
@@ -503,6 +622,7 @@ async function callTriageFindingGroups(
         config,
         signal: extra.signal,
       });
+      const [scope] = assertTenantScope('group_findings', payload, actor);
       return {
         key: triage,
         triage,
@@ -510,13 +630,25 @@ async function callTriageFindingGroups(
         blockedMetricReady: findingBlockedMetricReady(payload),
         firewall: payload.firewall,
         coverage: payload.coverage,
+        scope,
       };
     }));
 
+    const selectionScope = items[0]?.scope;
+    if (selectionScope && items.some(({ scope }) => (
+      scope.kind !== selectionScope.kind
+      || scope.firewall_id !== selectionScope.firewall_id
+      || scope.tenant !== selectionScope.tenant
+    ))) {
+      throw new FirewallApiError(
+        502,
+        'upstream_scope_mismatch',
+        'firewall-ui responses did not attest one consistent data scope.',
+      );
+    }
     const exactCounts = items.every((item) => typeof item.count === 'number');
     const selection = items[0];
-    outcome = 'success';
-    return mcpResult('group_findings', {
+    const result = mcpResult('group_findings', {
       by: 'triage',
       items: items.map(({ key, triage, count, blockedMetricReady }) => ({
         key,
@@ -529,7 +661,9 @@ async function callTriageFindingGroups(
       source: 'findings_totals_by_triage',
       firewall: selection?.firewall ?? null,
       coverage: selection?.coverage ?? null,
-    });
+    }, actor);
+    outcome = 'success';
+    return result;
   } catch (err) {
     return mcpErrorResult(err);
   } finally {

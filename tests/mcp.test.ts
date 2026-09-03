@@ -59,6 +59,21 @@ let upstreamAccessTokenOverride: string | null = null;
 let omitRotatedRefreshToken = false;
 let authMetadataOverride: Record<string, unknown> = {};
 let defaultSelectionAmbiguous = false;
+let listScopeTenant = 'acme';
+let listScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
+let findingScopeTenant = 'acme';
+let findingScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
+let conversationScopeTenant = 'acme';
+let conversationScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
+let totalsScopeTenantByTriage: Record<string, string> = {};
+
+function scopeAttestation(
+  firewallId: string,
+  tenant = 'acme',
+  kind: 'pilot_tenant' | 'deployment' = 'deployment',
+) {
+  return { kind, firewall_id: firewallId, tenant };
+}
 
 beforeEach(() => {
   upstreamCalls = [];
@@ -77,6 +92,13 @@ beforeEach(() => {
   omitRotatedRefreshToken = false;
   authMetadataOverride = {};
   defaultSelectionAmbiguous = false;
+  listScopeTenant = 'acme';
+  listScopeKind = 'deployment';
+  findingScopeTenant = 'acme';
+  findingScopeKind = 'deployment';
+  conversationScopeTenant = 'acme';
+  conversationScopeKind = 'deployment';
+  totalsScopeTenantByTriage = {};
   resetFirewallMcpPublicConfigCacheForTests();
   resetRateLimitsForTests();
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
@@ -451,6 +473,11 @@ function installMockFetch() {
       return json({
         items: [{
           firewall_id: 'yc-prod-us-west-2',
+          data_scope: scopeAttestation(
+            'yc-prod-us-west-2',
+            listScopeTenant,
+            listScopeKind,
+          ),
           runtime: 'sagemaker',
           capabilities: { trace: { state: 'available' } },
           generated_at: '2026-06-27T00:00:00.000Z',
@@ -473,6 +500,7 @@ function installMockFetch() {
     if (url.pathname === '/api/mcp/v1/firewalls/default') {
       return json({
         firewall_id: 'clickup-cascade-alpha',
+        data_scope: scopeAttestation('clickup-cascade-alpha'),
         scope: url.searchParams.has('region') ? 'regional' : 'global',
         region: url.searchParams.get('region'),
         regions: ['us-west-2', 'eu-west-1', 'ap-southeast-2', 'ap-southeast-5'],
@@ -481,6 +509,7 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/default/conversations/search') {
       return json({
+        data_scope: scopeAttestation('clickup-cascade-alpha'),
         results: [{
           handle: 'opaque-conversation-handle',
           relevance: 0.91,
@@ -499,6 +528,11 @@ function installMockFetch() {
       const request = JSON.parse(upstreamCalls.at(-1)?.body ?? '{}') as { cursor?: string };
       const continued = request.cursor === 'conversation-page-2';
       return json({
+        data_scope: scopeAttestation(
+          'clickup-cascade-alpha',
+          conversationScopeTenant,
+          conversationScopeKind,
+        ),
         handle: 'opaque-conversation-handle',
         events: [{
           timestamp: continued ? '2026-09-01T00:01:00Z' : '2026-09-01T00:00:00Z',
@@ -519,6 +553,7 @@ function installMockFetch() {
       return json({
         firewall: {
           firewall_id: 'clickup-cascade-alpha',
+          data_scope: scopeAttestation('clickup-cascade-alpha'),
           scope: url.searchParams.has('region') ? 'regional' : 'global',
           region: url.searchParams.get('region'),
         },
@@ -535,6 +570,7 @@ function installMockFetch() {
       return json({
         firewall: {
           firewall_id: 'clickup-cascade-alpha',
+          data_scope: scopeAttestation('clickup-cascade-alpha'),
           scope: url.searchParams.has('region') ? 'regional' : 'global',
           region: url.searchParams.get('region'),
         },
@@ -552,7 +588,14 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/qa-find-001') {
       return json({
-        firewall: { firewall_id: 'clickup-cascade-alpha' },
+        firewall: {
+          firewall_id: 'clickup-cascade-alpha',
+          data_scope: scopeAttestation(
+            'clickup-cascade-alpha',
+            findingScopeTenant,
+            findingScopeKind,
+          ),
+        },
         finding: {
           evidence_id: 'clickup-cascade-alpha:qa-find-001',
           text: 'CANARY_SECRET_SHOULD_NOT_APPEAR_IN_LOGS',
@@ -569,6 +612,7 @@ function installMockFetch() {
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2') {
       return json({
         firewall_id: 'yc-prod-us-west-2',
+        data_scope: scopeAttestation('yc-prod-us-west-2'),
         runtime: 'sagemaker',
         capabilities: { trace: { state: 'available' } },
       });
@@ -576,6 +620,10 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings') {
       return json({
+        firewall: {
+          firewall_id: 'yc-prod-us-west-2',
+          data_scope: scopeAttestation('yc-prod-us-west-2'),
+        },
         items: [],
         match_count: 0,
         received: Object.fromEntries(url.searchParams),
@@ -584,7 +632,10 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/users/suspicious') {
       return json({
-        firewall: { firewall_id: 'yc-prod-us-west-2' },
+        firewall: {
+          firewall_id: 'yc-prod-us-west-2',
+          data_scope: scopeAttestation('yc-prod-us-west-2'),
+        },
         time_window: url.searchParams.get('range') ?? '1d',
         filters: {
           abuse_categories: url.searchParams.getAll('category').length
@@ -711,8 +762,16 @@ function installMockFetch() {
         untriaged: 2,
       };
       const count = triage ? counts[triage] ?? 0 : 12;
+      const totalsScopeTenant = totalsScopeTenantByTriage[triage ?? 'all'] ?? 'acme';
+      const totalsScopeKind = totalsScopeTenantByTriage[triage ?? 'all']
+        ? 'pilot_tenant'
+        : 'deployment';
       if (totalsEnvelope === 'nested-total') {
         return json({
+          firewall: {
+            firewall_id: 'yc-prod-us-west-2',
+            data_scope: scopeAttestation('yc-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
+          },
           time_window: url.searchParams.get('range') ?? '1d',
           totals: {
             total: count,
@@ -724,6 +783,10 @@ function installMockFetch() {
       }
       if (totalsEnvelope === 'top-level-total') {
         return json({
+          firewall: {
+            firewall_id: 'yc-prod-us-west-2',
+            data_scope: scopeAttestation('yc-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
+          },
           time_window: url.searchParams.get('range') ?? '1d',
           total: count,
           blockedMetricReady: true,
@@ -732,6 +795,10 @@ function installMockFetch() {
         });
       }
       return json({
+        firewall: {
+          firewall_id: 'yc-prod-us-west-2',
+          data_scope: scopeAttestation('yc-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
+        },
         time_window: url.searchParams.get('range') ?? '1d',
         totals: {
           blocked: count,
@@ -745,6 +812,10 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/group') {
       return json({
+        firewall: {
+          firewall_id: 'yc-prod-us-west-2',
+          data_scope: scopeAttestation('yc-prod-us-west-2'),
+        },
         by: url.searchParams.get('by'),
         items: [],
         received: Object.fromEntries(url.searchParams),
@@ -753,7 +824,14 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/qa-find-001') {
       return json({
-        firewall: { firewall_id: 'yc-prod-us-west-2' },
+        firewall: {
+          firewall_id: 'yc-prod-us-west-2',
+          data_scope: scopeAttestation(
+            'yc-prod-us-west-2',
+            findingScopeTenant,
+            findingScopeKind,
+          ),
+        },
         finding: {
           evidence_id: 'yc-prod-us-west-2:qa-find-001',
           text: 'CANARY_SECRET_SHOULD_NOT_APPEAR_IN_LOGS',
@@ -973,11 +1051,9 @@ test('region selection and physical IDs are forwarded while canonical metadata i
   const body = result.structuredContent as {
     firewall: { firewall_id: string; scope: string; region: string };
   };
-  assert.deepEqual(body.firewall, {
-    firewall_id: 'clickup-cascade-alpha',
-    scope: 'regional',
-    region: 'eu-west-1',
-  });
+  assert.equal(body.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(body.firewall.scope, 'regional');
+  assert.equal(body.firewall.region, 'eu-west-1');
   const url = new URL(upstreamCalls.at(-1)?.url ?? '');
   assert.equal(
     url.pathname,
@@ -985,6 +1061,19 @@ test('region selection and physical IDs are forwarded while canonical metadata i
   );
   assert.equal(url.searchParams.get('region'), 'eu-west-1');
   assert.equal(url.searchParams.get('range'), '1h');
+});
+
+test('pilot responses must attest the authenticated tenant scope', async () => {
+  listScopeKind = 'pilot_tenant';
+  listScopeTenant = 'another-pilot';
+  const { client } = await connectedClient();
+  const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
+
+  assert.equal(result.isError, true);
+  assert.equal(
+    (result.structuredContent as { error: { code: string } }).error.code,
+    'upstream_scope_mismatch',
+  );
 });
 
 test('regional findings preserve the source-attribution rollout boundary', async () => {
@@ -2288,6 +2377,25 @@ test('group_findings can aggregate exact counts by triage verdict', async () => 
   ]);
 });
 
+test('group_findings rejects a mismatched constituent scope before aggregation', async () => {
+  totalsScopeTenantByTriage.false_positive = 'another-pilot';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'group_findings',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      by: 'triage',
+      range: '1d',
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(
+    (result.structuredContent as { error: { code: string } }).error.code,
+    'upstream_scope_mismatch',
+  );
+});
+
 test('activity emits once per logical tool call with a minimal fail-open payload', async () => {
   process.env.MCP_ACTIVITY_ENABLED = 'true';
   process.env.MCP_ACTIVITY_INGEST_KEY = 'test-activity-key-with-at-least-32-characters';
@@ -2462,6 +2570,51 @@ test('detail access audits metadata only and does not log payload text', async (
     console.warn = originalConsole.warn;
     console.error = originalConsole.error;
   }
+});
+
+test('mismatched finding scope is denied and audited as an error', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  findingScopeKind = 'pilot_tenant';
+  findingScopeTenant = 'another-pilot';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_finding',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      finding_id: 'qa-find-001',
+      reason: 'Verify tenant scope before recording successful access.',
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(
+    (result.structuredContent as { error: { code: string } }).error.code,
+    'upstream_scope_mismatch',
+  );
+  assert.equal(auditCalls.length, 1);
+  assert.equal(JSON.parse(auditCalls[0].body ?? '{}').outcome, 'error');
+});
+
+test('mismatched conversation scope is denied and audited as an error', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  conversationScopeKind = 'pilot_tenant';
+  conversationScopeTenant = 'another-pilot';
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'get_conversation',
+    arguments: {
+      handle: 'opaque-conversation-handle',
+      reason: 'Verify tenant scope before recording successful access.',
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(
+    (result.structuredContent as { error: { code: string } }).error.code,
+    'upstream_scope_mismatch',
+  );
+  assert.equal(auditCalls.length, 1);
+  assert.equal(JSON.parse(auditCalls[0].body ?? '{}').outcome, 'error');
 });
 
 test('default sensitive reads audit the canonical resolved firewall', async () => {
