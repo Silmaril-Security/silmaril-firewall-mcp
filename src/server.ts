@@ -284,8 +284,9 @@ function assertTenantScope(
   toolName: string,
   payload: unknown,
   actor: McpActorContext,
-): void {
-  for (const scope of scopeAttestations(toolName, payload)) {
+): DataScopeAttestation[] {
+  const scopes = scopeAttestations(toolName, payload);
+  for (const scope of scopes) {
     if (scope.kind === 'pilot_tenant' && scope.tenant !== actor.tenant) {
       throw new FirewallApiError(
         502,
@@ -294,6 +295,7 @@ function assertTenantScope(
       );
     }
   }
+  return scopes;
 }
 
 function mcpResult(
@@ -386,6 +388,7 @@ async function callConversationHydration(
       }
     }
     let payload: unknown;
+    let result;
     try {
       payload = await firewallPostJson({
         path: firewallPath(canonicalFirewallId, `/conversations/${enc(handle)}`),
@@ -395,6 +398,11 @@ async function callConversationHydration(
         signal: extra.signal,
         timeoutMs: conversationUpstreamTimeoutMs(config),
       });
+      result = mcpResult(
+        'get_conversation',
+        payload,
+        actorContext(extra.authInfo),
+      );
     } catch (err) {
       await auditDetailAccess({
         tool: 'get_conversation',
@@ -416,11 +424,6 @@ async function callConversationHydration(
       outcome: 'success',
       actor: actorContext(extra.authInfo),
     }, config, extra.signal);
-    const result = mcpResult(
-      'get_conversation',
-      payload,
-      actorContext(extra.authInfo),
-    );
     outcome = 'success';
     return result;
   } catch (err) {
@@ -534,6 +537,7 @@ async function callSensitiveFirewall<T>(
       }
     }
     let payload: T;
+    let result;
     try {
       payload = await firewallGetJson<T>({
         path: pathForFirewall(auditFirewallId),
@@ -541,6 +545,7 @@ async function callSensitiveFirewall<T>(
         config,
         signal: extra.signal,
       });
+      result = mcpResult(toolName, payload, actorContext(extra.authInfo));
     } catch (err) {
       await auditDetailAccess({
         tool: toolName,
@@ -562,7 +567,6 @@ async function callSensitiveFirewall<T>(
       outcome: 'success',
       actor: actorContext(extra.authInfo),
     }, config, extra.signal);
-    const result = mcpResult(toolName, payload, actorContext(extra.authInfo));
     outcome = 'success';
     return result;
   } catch (err) {
@@ -602,6 +606,7 @@ async function callTriageFindingGroups(
   try {
     bearer = token(extra);
     const authenticatedToken = bearer;
+    const actor = actorContext(extra.authInfo);
     const items = await Promise.all(buckets.map(async (triage) => {
       const payload = await firewallGetJson<FindingTotalsPayload>({
         path: pathWithQuery(firewallPath(firewallId, '/findings/totals'), findingQueryParams({
@@ -617,6 +622,7 @@ async function callTriageFindingGroups(
         config,
         signal: extra.signal,
       });
+      const [scope] = assertTenantScope('group_findings', payload, actor);
       return {
         key: triage,
         triage,
@@ -624,9 +630,22 @@ async function callTriageFindingGroups(
         blockedMetricReady: findingBlockedMetricReady(payload),
         firewall: payload.firewall,
         coverage: payload.coverage,
+        scope,
       };
     }));
 
+    const selectionScope = items[0]?.scope;
+    if (selectionScope && items.some(({ scope }) => (
+      scope.kind !== selectionScope.kind
+      || scope.firewall_id !== selectionScope.firewall_id
+      || scope.tenant !== selectionScope.tenant
+    ))) {
+      throw new FirewallApiError(
+        502,
+        'upstream_scope_mismatch',
+        'firewall-ui responses did not attest one consistent data scope.',
+      );
+    }
     const exactCounts = items.every((item) => typeof item.count === 'number');
     const selection = items[0];
     const result = mcpResult('group_findings', {
@@ -642,7 +661,7 @@ async function callTriageFindingGroups(
       source: 'findings_totals_by_triage',
       firewall: selection?.firewall ?? null,
       coverage: selection?.coverage ?? null,
-    }, actorContext(extra.authInfo));
+    }, actor);
     outcome = 'success';
     return result;
   } catch (err) {
