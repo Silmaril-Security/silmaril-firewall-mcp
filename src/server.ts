@@ -28,6 +28,9 @@ const OwnerSelectorSchema = z.string().trim().min(1).max(320).describe(
 );
 const ReasonSchema = z.string().min(8).max(512);
 const ConversationRangeSchema = z.enum(['1d', '7d', '30d', '90d']);
+const ConversationTopicStatusSchema = z.enum(['active', 'emerging', 'all']);
+const ConversationTopicSortSchema = z.enum(['volume', 'growth', 'newest']);
+const ConversationTopicMembershipSchema = z.enum(['primary', 'secondary', 'all']);
 const AbuseCategorySchema = z.enum([
   'ai_control_abuse',
   'data_exfiltration',
@@ -213,6 +216,8 @@ const TENANT_SCOPED_TOOLS = new Set([
   'get_investigation_packet',
   'search_conversations',
   'get_conversation',
+  'list_conversation_topics',
+  'get_conversation_topic',
   'get_finding',
   'get_finding_trace',
 ]);
@@ -898,6 +903,61 @@ export function createFirewallMcpServer(
       handle,
       reason,
       cursor,
+      extra,
+      config,
+      recordActivity,
+    ));
+
+  server.registerTool('list_conversation_topics', {
+    title: 'List Conversation Topics',
+    description: 'List tenant-isolated stable and emerging conversation topics with daily trends, assignment coverage, and bounded hostile-evidence representatives. Topic output is derived and approximate.',
+    inputSchema: {
+      firewall_id: FirewalledIdSchema.optional().describe(
+        'Optional firewall ID. Omit to use the authenticated organization default.',
+      ),
+      range: ConversationRangeSchema.optional(),
+      status: ConversationTopicStatusSchema.optional(),
+      sort: ConversationTopicSortSchema.optional(),
+      page_size: z.number().int().min(1).max(50).optional(),
+      cursor: z.string().min(1).optional(),
+    },
+    annotations: readOnlyAnnotations,
+  }, async ({ firewall_id, ...query }, extra) =>
+    callFirewall(
+      'list_conversation_topics',
+      pathWithQuery(
+        firewallPath(firewall_id, '/conversation-topics'),
+        query,
+      ),
+      extra,
+      config,
+      recordActivity,
+    ));
+
+  server.registerTool('get_conversation_topic', {
+    title: 'Get Conversation Topic',
+    description: 'Read one authorized topic, its daily trend and split or merge lineage, plus paginated primary or secondary conversation handles. Use get_conversation with trace consent for complete evidence.',
+    inputSchema: {
+      firewall_id: FirewalledIdSchema.optional().describe(
+        'Optional firewall ID. Omit to use the authenticated organization default.',
+      ),
+      topic_id: FirewalledIdSchema,
+      range: ConversationRangeSchema.optional(),
+      membership: ConversationTopicMembershipSchema.optional(),
+      page_size: z.number().int().min(1).max(100).optional(),
+      cursor: z.string().min(1).optional(),
+    },
+    annotations: readOnlyAnnotations,
+  }, async ({ firewall_id, topic_id, ...query }, extra) =>
+    callFirewall(
+      'get_conversation_topic',
+      pathWithQuery(
+        firewallPath(
+          firewall_id,
+          `/conversation-topics/${enc(topic_id)}`,
+        ),
+        query,
+      ),
       extra,
       config,
       recordActivity,

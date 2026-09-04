@@ -521,6 +521,40 @@ function installMockFetch() {
       });
     }
 
+    if (url.pathname === '/api/mcp/v1/firewalls/default/conversation-topics') {
+      return json({
+        data_scope: scopeAttestation('clickup-cascade-alpha'),
+        state: 'ready',
+        topics: [{
+          topic_id: 'topic-1',
+          label: 'Customer Support Workflow Questions',
+          representatives: [{
+            handle: 'opaque-conversation-handle',
+            preview: 'untrusted topic preview',
+          }],
+        }],
+        next_cursor: 'topic-page-2',
+        approximate: true,
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/default/conversation-topics/topic-1') {
+      return json({
+        data_scope: scopeAttestation('clickup-cascade-alpha'),
+        topic: {
+          topic_id: 'topic-1',
+          label: 'Customer Support Workflow Questions',
+        },
+        conversations: [{
+          handle: 'opaque-conversation-handle',
+          preview: 'untrusted topic preview',
+          membership: 'primary',
+        }],
+        next_cursor: null,
+        approximate: true,
+      });
+    }
+
     if (
       url.pathname
       === '/api/mcp/v1/firewalls/clickup-cascade-alpha/conversations/opaque-conversation-handle'
@@ -902,6 +936,8 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.ok(tools.tools.some((tool) => tool.name === 'get_investigation_packet'));
   assert.ok(tools.tools.some((tool) => tool.name === 'search_conversations'));
   assert.ok(tools.tools.some((tool) => tool.name === 'get_conversation'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'list_conversation_topics'));
+  assert.ok(tools.tools.some((tool) => tool.name === 'get_conversation_topic'));
   for (const name of [
     'get_firewall',
     'get_metrics',
@@ -914,6 +950,8 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
     'get_finding_trace',
     'search_conversations',
     'get_conversation',
+    'list_conversation_topics',
+    'get_conversation_topic',
   ]) {
     const tool = tools.tools.find((candidate) => candidate.name === name);
     assert.equal(
@@ -1014,6 +1052,49 @@ test('conversation tools proxy POST bodies and continue audited hydration with s
     timeoutCalls.filter((milliseconds) => milliseconds === 25_000).length >= 3,
     'search and both hydration pages must outlast the firewall-ui Athena timeout',
   );
+});
+
+test('conversation topic tools use read-only tenant-attested GET pagination', async () => {
+  const { client } = await connectedClient();
+  const listed = await client.callTool({
+    name: 'list_conversation_topics',
+    arguments: {
+      range: '30d',
+      status: 'all',
+      sort: 'growth',
+      page_size: 10,
+    },
+  });
+  assert.equal(listed.isError, undefined, JSON.stringify(listed));
+  const listCall = upstreamCalls.find((call) =>
+    new URL(call.url).pathname.endsWith('/conversation-topics'));
+  assert.ok(listCall);
+  const listUrl = new URL(listCall.url);
+  assert.equal(listUrl.searchParams.get('range'), '30d');
+  assert.equal(listUrl.searchParams.get('status'), 'all');
+  assert.equal(listUrl.searchParams.get('sort'), 'growth');
+  assert.equal(listUrl.searchParams.get('page_size'), '10');
+  assert.equal(listCall.body, '');
+
+  const detail = await client.callTool({
+    name: 'get_conversation_topic',
+    arguments: {
+      topic_id: 'topic-1',
+      range: '7d',
+      membership: 'secondary',
+      page_size: 25,
+      cursor: 'sealed-membership-cursor',
+    },
+  });
+  assert.equal(detail.isError, undefined, JSON.stringify(detail));
+  const detailCall = upstreamCalls.find((call) =>
+    new URL(call.url).pathname.endsWith('/conversation-topics/topic-1'));
+  assert.ok(detailCall);
+  const detailUrl = new URL(detailCall.url);
+  assert.equal(detailUrl.searchParams.get('range'), '7d');
+  assert.equal(detailUrl.searchParams.get('membership'), 'secondary');
+  assert.equal(detailUrl.searchParams.get('page_size'), '25');
+  assert.equal(detailUrl.searchParams.get('cursor'), 'sealed-membership-cursor');
 });
 
 test('omitted firewall selection resolves globally and preserves partial coverage', async () => {
