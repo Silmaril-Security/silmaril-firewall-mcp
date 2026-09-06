@@ -4,6 +4,7 @@ export interface McpActorContext {
   subject: string;
   organization: string | null;
   tenant: string | null;
+  isAdmin: boolean;
   actorEmail: string | null;
   clientId: string;
   tokenId: string | null;
@@ -28,6 +29,7 @@ export function actorContext(authInfo: AuthInfo | undefined): McpActorContext {
     subject,
     organization: nullableString(authInfo?.extra?.organization),
     tenant: nullableString(authInfo?.extra?.tenant),
+    isAdmin: authInfo?.extra?.isAdmin === true,
     actorEmail: nullableString(authInfo?.extra?.actorEmail),
     clientId: authInfo?.clientId ?? 'unknown',
     tokenId: nullableString(authInfo?.extra?.tokenId),

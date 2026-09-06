@@ -1,5 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { z } from 'zod';
 import { readConfig, type ServerConfig } from './config';
 import {
   type McpResourceKind,
@@ -114,7 +115,20 @@ function bearerToken(req: Request): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function authInfo(token: string, credential: McpCredential): AuthInfo {
+const PrincipalSchema = z.object({
+  subject: z.string().trim().min(1),
+  organization_id: z.string().trim().min(1),
+  tenant: z.string().trim().min(1),
+  is_admin: z.boolean(),
+});
+
+type VerifiedPrincipal = z.infer<typeof PrincipalSchema>;
+
+function authInfo(
+  token: string,
+  credential: McpCredential,
+  principal?: VerifiedPrincipal,
+): AuthInfo {
   return {
     token,
     clientId: credential.client_id,
@@ -124,8 +138,9 @@ function authInfo(token: string, credential: McpCredential): AuthInfo {
     extra: {
       downstreamToken: credential.downstream_token,
       subject: credential.subject,
-      organization: credential.organization,
-      tenant: credential.tenant,
+      organization: principal?.organization_id ?? credential.organization,
+      tenant: principal?.tenant ?? credential.tenant,
+      isAdmin: principal?.is_admin ?? false,
       actorEmail: credential.actor_email,
       tokenId: credential.token_id,
     },
@@ -192,13 +207,37 @@ async function assertPublicAccess(
   credential: McpCredential,
   config: ServerConfig,
   signal?: AbortSignal,
-): Promise<void> {
-  await firewallGetJson({
+): Promise<VerifiedPrincipal | undefined> {
+  const payload = await firewallGetJson<unknown>({
     path: '/api/mcp/v1/schema',
     token: credential.downstream_token,
     config,
     signal,
   });
+  const parsed = z.object({ principal: PrincipalSchema.optional() }).safeParse(payload);
+  if (!parsed.success) {
+    throw new FirewallApiError(
+      502,
+      'upstream_scope_unverified',
+      'firewall-ui response did not include a valid authenticated principal.',
+    );
+  }
+  const principal = parsed.data.principal;
+  // Older firewall-ui versions do not attest a principal. Preserve tenant-only
+  // checks in that case; never infer global admin authority from client input.
+  if (!principal) return undefined;
+  if (
+    principal.subject !== credential.subject
+    || (credential.organization !== undefined && principal.organization_id !== credential.organization)
+    || (credential.tenant !== undefined && principal.tenant !== credential.tenant)
+  ) {
+    throw new FirewallApiError(
+      502,
+      'upstream_scope_mismatch',
+      'firewall-ui authenticated principal did not match the MCP credential.',
+    );
+  }
+  return principal;
 }
 
 export async function handleMcpRequest(
@@ -269,6 +308,7 @@ export async function handleMcpRequest(
     });
   }
 
+  let principal: VerifiedPrincipal | undefined;
   if (mode === 'admin') {
     try {
       await assertAdminAccess(credential.downstream_token, config, req.signal);
@@ -280,7 +320,7 @@ export async function handleMcpRequest(
     }
   } else {
     try {
-      await assertPublicAccess(credential, config, req.signal);
+      principal = await assertPublicAccess(credential, config, req.signal);
     } catch (err) {
       if (err instanceof FirewallApiError) {
         const headers = err.status === 401 ? {
@@ -305,7 +345,7 @@ export async function handleMcpRequest(
   await server.connect(transport);
 
   const response = await transport.handleRequest(transportRequest, {
-    authInfo: authInfo(token, credential),
+    authInfo: authInfo(token, credential, principal),
   });
   return withCors(response, origin.origin);
 }

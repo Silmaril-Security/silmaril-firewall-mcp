@@ -292,7 +292,7 @@ function assertTenantScope(
 ): DataScopeAttestation[] {
   const scopes = scopeAttestations(toolName, payload);
   for (const scope of scopes) {
-    if (scope.kind === 'pilot_tenant' && scope.tenant !== actor.tenant) {
+    if (scope.kind === 'pilot_tenant' && scope.tenant !== actor.tenant && !actor.isAdmin) {
       throw new FirewallApiError(
         502,
         'upstream_scope_mismatch',
