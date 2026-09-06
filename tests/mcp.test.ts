@@ -23,7 +23,7 @@ import {
   handleOAuthCallbackRequest,
   handleTokenRequest,
 } from '../src/oauth-authorization-server';
-import { issueMcpCredential, mcpResource } from '../src/oauth-credentials';
+import { issueMcpCredential, mcpResource, validateMcpAccessToken, validateMcpRefreshToken } from '../src/oauth-credentials';
 import { resetRateLimitsForTests } from '../src/rate-limit';
 
 const originalFetch = globalThis.fetch;
@@ -66,6 +66,8 @@ let findingScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
 let conversationScopeTenant = 'acme';
 let conversationScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
 let totalsScopeTenantByTriage: Record<string, string> = {};
+let schemaPrincipal: unknown;
+let additionalListItems: Record<string, unknown>[] = [];
 
 function scopeAttestation(
   firewallId: string,
@@ -99,6 +101,13 @@ beforeEach(() => {
   conversationScopeTenant = 'acme';
   conversationScopeKind = 'deployment';
   totalsScopeTenantByTriage = {};
+  schemaPrincipal = {
+    subject: 'auth0|user',
+    organization_id: 'org_acme',
+    tenant: 'acme',
+    is_admin: false,
+  };
+  additionalListItems = [];
   resetFirewallMcpPublicConfigCacheForTests();
   resetRateLimitsForTests();
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
@@ -423,6 +432,7 @@ function installMockFetch() {
       }
       return json({
         version: 'v1',
+        principal: schemaPrincipal,
         scopes: ['firewalls:read', 'metrics:read', 'findings:read'],
         time_ranges: ['5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '3d', '1w', '30d'],
         suspicious_users: {
@@ -481,7 +491,7 @@ function installMockFetch() {
           runtime: 'sagemaker',
           capabilities: { trace: { state: 'available' } },
           generated_at: '2026-06-27T00:00:00.000Z',
-        }],
+        }, ...additionalListItems],
       });
     }
 
@@ -521,9 +531,14 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/default/conversation-topics') {
+    if (
+      url.pathname === '/api/mcp/v1/firewalls/default/conversation-topics'
+      || url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/conversation-topics'
+    ) {
       return json({
-        data_scope: scopeAttestation('clickup-cascade-alpha'),
+        data_scope: scopeAttestation(url.pathname.includes('/default/')
+          ? 'clickup-cascade-alpha'
+          : 'yc-prod-us-west-2'),
         state: 'ready',
         topics: [{
           topic_id: 'topic-1',
@@ -894,13 +909,13 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000) {
   assert.equal(predicate(), true);
 }
 
-async function connectedClient() {
+async function connectedClient(accessToken = mcpAccessToken()) {
   installMockFetch();
   const client = new Client({ name: 'mcp-test-client', version: '0.1.0' });
   const transport = new StreamableHTTPClientTransport(new URL('https://mcp.test/mcp'), {
     requestInit: {
       headers: {
-        authorization: `Bearer ${mcpAccessToken()}`,
+        authorization: `Bearer ${accessToken}`,
         origin: 'https://codex.test',
       },
     },
@@ -1155,6 +1170,95 @@ test('pilot responses must attest the authenticated tenant scope', async () => {
     (result.structuredContent as { error: { code: string } }).error.code,
     'upstream_scope_mismatch',
   );
+});
+
+test('verified global admins can discover a mixed firewall list and select conversation topics', async () => {
+  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  additionalListItems = ['pilot-one', 'pilot-two'].map((tenant) => ({
+    firewall_id: `managed:${tenant}`,
+    data_scope: scopeAttestation(`managed:${tenant}`, tenant, 'pilot_tenant'),
+  }));
+  defaultSelectionAmbiguous = true;
+  const { client } = await connectedClient();
+  const listed = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(listed.isError, undefined);
+  const items = (listed.structuredContent as { items: Array<{ firewall_id: string }> }).items;
+  assert.equal(items.length, 3);
+  const topics = await client.callTool({
+    name: 'list_conversation_topics',
+    arguments: { firewall_id: items[0].firewall_id, range: '7d' },
+  });
+  assert.equal(topics.isError, undefined);
+  assert.equal((topics.structuredContent as { data_scope: { firewall_id: string } }).data_scope.firewall_id, items[0].firewall_id);
+  assert.match(upstreamCalls.at(-1)?.url ?? '', /\/firewalls\/yc-prod-us-west-2\/conversation-topics/);
+});
+
+test('admin authority is refreshed for each evidence request', async () => {
+  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  listScopeKind = 'pilot_tenant';
+  listScopeTenant = 'another-pilot';
+  const { client } = await connectedClient();
+  const allowed = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(allowed.isError, undefined);
+  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: false };
+  const denied = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(denied.isError, true);
+  assert.equal((denied.structuredContent as { error: { code: string } }).error.code, 'upstream_scope_mismatch');
+});
+
+test('global admins still require a data scope attestation on every discovered firewall', async () => {
+  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  additionalListItems = [{ firewall_id: 'managed:pilot-one' }];
+  const { client } = await connectedClient();
+  const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(result.isError, true);
+  assert.equal((result.structuredContent as { error: { code: string } }).error.code, 'upstream_scope_unverified');
+});
+
+test('preflight recovers tenant identity for existing credentials that omitted it', async () => {
+  const accessToken = issueMcpCredential({
+    kind: 'access', downstream_token: 'user-access-token', client_id: 'legacy-client',
+    resource: 'https://mcp.test/mcp', scopes: ['firewalls:read'],
+    subject: 'auth0|user', organization: 'org_acme', expiresInSeconds: 3600,
+  }, readConfig());
+  listScopeKind = 'pilot_tenant';
+  const { client } = await connectedClient(accessToken);
+  const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(result.isError, undefined);
+});
+
+test('preflight rejects a principal for another subject, organization, or tenant before reading evidence', async () => {
+  const { client } = await connectedClient();
+  const principal = schemaPrincipal as Record<string, unknown>;
+  for (const mismatch of [
+    { subject: 'auth0|other' }, { organization_id: 'org_other' }, { tenant: 'other' },
+  ]) {
+    schemaPrincipal = { ...principal, ...mismatch, is_admin: true };
+    upstreamCalls = [];
+    await assert.rejects(() => client.callTool({ name: 'list_firewalls', arguments: {} }), /upstream_scope_mismatch/);
+    assert.equal(upstreamCalls.some((call) => new URL(call.url).pathname === '/api/mcp/v1/firewalls'), false);
+  }
+});
+
+test('missing or malformed preflight authority cannot grant cross-tenant pilot access', async () => {
+  const { client } = await connectedClient();
+  listScopeKind = 'pilot_tenant';
+  const principal = schemaPrincipal as Record<string, unknown>;
+  schemaPrincipal = undefined;
+  const sameTenant = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(sameTenant.isError, undefined);
+  listScopeTenant = 'another-pilot';
+  const legacy = await client.callTool({
+    name: 'list_firewalls', arguments: { is_admin: true, tenant: 'another-pilot' },
+  });
+  assert.equal(legacy.isError, true);
+  assert.equal((legacy.structuredContent as { error: { code: string } }).error.code, 'upstream_scope_mismatch');
+  for (const malformed of [null, { ...principal, is_admin: 'true' }, { ...principal, subject: '' }]) {
+    schemaPrincipal = malformed;
+    upstreamCalls = [];
+    await assert.rejects(() => client.callTool({ name: 'list_firewalls', arguments: {} }), /upstream_scope_unverified/);
+    assert.equal(upstreamCalls.some((call) => new URL(call.url).pathname === '/api/mcp/v1/firewalls'), false);
+  }
 });
 
 test('regional findings preserve the source-attribution rollout boundary', async () => {
@@ -1903,6 +2007,44 @@ test('token bridge refuses wrong-issuer, wrong-audience, expired, and forged ups
   }
 });
 
+test('token bridge preserves the canonical firewall-ui tenant claim in access and refresh credentials', async () => {
+  installMockFetch();
+  for (const tenant of [undefined, 'legacy-alias']) {
+    upstreamAccessTokenOverride = await upstreamAccessToken({
+      org_id: undefined,
+      organization_id: 'org_acme',
+      tenant,
+      'https://silmaril.security/firewall-ui/tenant': ' acme ',
+    });
+    const clientId = await registerClient();
+    const flow = await completeAuthorization(clientId);
+    const response = await handleTokenRequest(
+      new Request('https://mcp.test/oauth/token', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          code: flow.bridgeCode,
+          redirect_uri: flow.redirectUri,
+          code_verifier: flow.verifier,
+          resource: 'https://mcp.test/mcp',
+        }).toString(),
+      }),
+      readConfig(),
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    for (const credential of [
+      validateMcpAccessToken(body.access_token, 'public', readConfig()),
+      validateMcpRefreshToken(body.refresh_token, clientId, readConfig()),
+    ]) {
+      assert.equal(credential.tenant, 'acme');
+      assert.equal(credential.organization, 'org_acme');
+    }
+  }
+});
+
 test('token bridge rejects authorization code exchange for a different loopback callback', async () => {
   installMockFetch();
   const clientId = await registerClient();
@@ -2475,6 +2617,19 @@ test('group_findings rejects a mismatched constituent scope before aggregation',
     (result.structuredContent as { error: { code: string } }).error.code,
     'upstream_scope_mismatch',
   );
+});
+
+test('global admins still cannot aggregate inconsistent pilot scopes', async () => {
+  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  totalsScopeTenantByTriage = {
+    true_positive: 'pilot-one', false_positive: 'pilot-two', untriaged: 'pilot-one',
+  };
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'group_findings', arguments: { firewall_id: 'yc-prod-us-west-2', by: 'triage' },
+  });
+  assert.equal(result.isError, true);
+  assert.equal((result.structuredContent as { error: { code: string } }).error.code, 'upstream_scope_mismatch');
 });
 
 test('activity emits once per logical tool call with a minimal fail-open payload', async () => {

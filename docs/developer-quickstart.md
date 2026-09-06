@@ -106,6 +106,19 @@ results.
 
 ## Security Limits And Audit
 
+Every public MCP request revalidates its downstream credential through
+`GET /api/mcp/v1/schema`. Its `principal` attestation carries the verified
+subject, organization, tenant, and global `is_admin` flag. The proxy binds that
+identity to the MCP credential before using it for pilot-scope checks. Admin
+authority is refreshed per request and cannot be supplied through tool arguments.
+The OAuth bridge reads firewall-ui's namespaced tenant claim; existing MCP
+credentials without a tenant recover it from the verified preflight.
+
+Deploy firewall-ui's additive schema attestation before this proxy change.
+With an older firewall-ui response, the proxy retains tenant-only checks and
+does not grant cross-tenant pilot access. Rolling back either side restores
+those restrictive checks without changing stored tenant data or credentials.
+
 The MCP route rejects invalid credentials before JSON-RPC handling, rejects
 JSON-RPC batches and non-JSON or oversized requests, and applies an actor/client
 token bucket before upstream work. Higher-amplification tools consume weighted

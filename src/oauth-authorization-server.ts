@@ -737,8 +737,13 @@ function localTokenResponse(
     resource,
     scopes: returnedScopes,
     subject: claims.sub,
-    organization: claimString(claims, ['org_id', 'https://silmaril.security/org_id']),
-    tenant: claimString(claims, ['tenant', 'tenant_id', 'https://silmaril.security/tenant']),
+    organization: claimString(claims, ['org_id', 'organization_id', 'https://silmaril.security/org_id']),
+    tenant: claimString(claims, [
+      'https://silmaril.security/firewall-ui/tenant',
+      'tenant',
+      'tenant_id',
+      'https://silmaril.security/tenant',
+    ])?.trim(),
     actor_email: claims.email,
     token_id: claims.jti,
   };
