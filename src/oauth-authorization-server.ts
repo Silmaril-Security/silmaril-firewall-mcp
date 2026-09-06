@@ -503,7 +503,7 @@ async function validateUpstreamClaims(
 function claimString(claims: UpstreamAccessClaims, names: string[]): string | undefined {
   for (const name of names) {
     const value = claims[name];
-    if (typeof value === 'string' && value) return value;
+    if (typeof value === 'string' && value.trim()) return value.trim();
   }
   return undefined;
 }
@@ -743,7 +743,7 @@ function localTokenResponse(
       'tenant',
       'tenant_id',
       'https://silmaril.security/tenant',
-    ])?.trim(),
+    ]),
     actor_email: claims.email,
     token_id: claims.jti,
   };

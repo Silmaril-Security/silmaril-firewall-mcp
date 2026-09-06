@@ -2007,14 +2007,21 @@ test('token bridge refuses wrong-issuer, wrong-audience, expired, and forged ups
   }
 });
 
-test('token bridge preserves the canonical firewall-ui tenant claim in access and refresh credentials', async () => {
+test('token bridge normalizes identity claims before selection in access and refresh credentials', async () => {
   installMockFetch();
-  for (const tenant of [undefined, 'legacy-alias']) {
+  const cases = [
+    { tenant: undefined, canonicalTenant: ' acme ', organization: ' org_acme ', expectedTenant: 'acme' },
+    { tenant: 'legacy-alias', canonicalTenant: ' acme ', organization: 'org_acme', expectedTenant: 'acme' },
+    { tenant: ' acme ', canonicalTenant: ' \t ', organization: ' \t ', expectedTenant: 'acme' },
+    { tenant: ' \t ', canonicalTenant: ' \t ', organization: ' \t ', expectedTenant: undefined },
+  ];
+  for (const { tenant, canonicalTenant, organization, expectedTenant } of cases) {
     upstreamAccessTokenOverride = await upstreamAccessToken({
       org_id: undefined,
-      organization_id: 'org_acme',
+      organization_id: organization,
+      'https://silmaril.security/org_id': ' org_acme ',
       tenant,
-      'https://silmaril.security/firewall-ui/tenant': ' acme ',
+      'https://silmaril.security/firewall-ui/tenant': canonicalTenant,
     });
     const clientId = await registerClient();
     const flow = await completeAuthorization(clientId);
@@ -2039,7 +2046,7 @@ test('token bridge preserves the canonical firewall-ui tenant claim in access an
       validateMcpAccessToken(body.access_token, 'public', readConfig()),
       validateMcpRefreshToken(body.refresh_token, clientId, readConfig()),
     ]) {
-      assert.equal(credential.tenant, 'acme');
+      assert.equal(credential.tenant, expectedTenant);
       assert.equal(credential.organization, 'org_acme');
     }
   }
