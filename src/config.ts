@@ -1,8 +1,11 @@
+import { isValidConfiguredOAuthRedirectUri } from './oauth-redirect-policy';
+
 export interface ServerConfig {
   firewallUiBaseUrl: string;
   publicBaseUrl: string | null;
   auth0Organization: string | null;
   oauthStateSecret: string | null;
+  oauthAllowedRedirectUris: string[];
   allowedOrigins: string[];
   maxRequestBytes: number;
   maxResponseBytes: number;
@@ -75,6 +78,18 @@ function unique(items: readonly string[]): string[] {
   return [...new Set(items)];
 }
 
+function oauthAllowedRedirectUris(value: string | undefined): string[] {
+  const entries = unique(splitList(value));
+  for (const [index, entry] of entries.entries()) {
+    if (!isValidConfiguredOAuthRedirectUri(entry)) {
+      throw new Error(
+        `MCP_OAUTH_ALLOWED_REDIRECT_URIS contains an invalid redirect URI at position ${index + 1}.`,
+      );
+    }
+  }
+  return entries;
+}
+
 function booleanEnv(name: string): boolean {
   const value = process.env[name]?.trim().toLowerCase();
   if (!value || value === '0' || value === 'false') return false;
@@ -94,6 +109,9 @@ export function readConfig(): ServerConfig {
     publicBaseUrl: optionalBaseUrl(process.env.MCP_PUBLIC_BASE_URL),
     auth0Organization: process.env.MCP_AUTH0_ORGANIZATION?.trim() || null,
     oauthStateSecret: process.env.MCP_OAUTH_STATE_SECRET?.trim() || null,
+    oauthAllowedRedirectUris: oauthAllowedRedirectUris(
+      process.env.MCP_OAUTH_ALLOWED_REDIRECT_URIS,
+    ),
     allowedOrigins: unique([
       ...DEFAULT_ALLOWED_ORIGINS,
       ...splitList(process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS),

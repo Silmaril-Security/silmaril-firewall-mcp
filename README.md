@@ -21,19 +21,58 @@ For a deeper walkthrough, see [docs/customer-guide.md](docs/customer-guide.md).
 - A Silmaril customer account.
 - Access to the Auth0 organization for your tenant.
 - At least one authorized Silmaril Firewall deployment.
-- An MCP client. The setup below uses Codex because it supports hosted MCP OAuth discovery.
+- An MCP client that supports hosted MCP OAuth discovery. Codex, ClickUp, and Cursor are covered below.
 
 ## Connect
 
-Run:
+Every client uses the same hosted URL, `https://firewall-mcp.silmaril.dev/mcp`, and the same Silmaril login. For ClickUp and Cursor, Silmaril must enable hosted client callbacks on that MCP environment first; the client URL alone does not complete registration.
+
+### Codex
 
 ```sh
 codex mcp add silmaril-firewall --url https://firewall-mcp.silmaril.dev/mcp
 ```
 
-When your MCP client connects, Silmaril login opens in the browser. Choose the customer organization you normally use for Silmaril. Your MCP access follows that organization and only returns Firewall data you are authorized to see.
+### ClickUp
 
-You should not need to paste tokens, configure OAuth fields, or provide cloud credentials. The hosted MCP server issues a resource-bound MCP credential after Silmaril login and uses a separate verified Auth0 credential for the read-only evidence API.
+In ClickUp, open **App Center > Custom MCP > Add new**, choose **Just for me**, then **Next > Connect an MCP Server**.
+
+1. Name the server `Silmaril Firewall`.
+2. Set the URL to `https://firewall-mcp.silmaril.dev/mcp`.
+3. Leave authentication on OAuth (the default).
+4. Leave **Advanced configuration** closed. Opening it makes Client ID required, and this baseline setup does not use a client ID. With Advanced closed, ClickUp registers automatically and the MCP server grants the default aggregate scopes `firewalls:read`, `metrics:read`, and `findings:read`.
+
+Connect. Silmaril login opens in the browser.
+
+If automatic client registration fails, keep **Advanced configuration** closed. That failure can mean hosted callback support is not enabled on this MCP environment, or it can come from unsupported client metadata or an upstream outage. Contact Silmaril with the client name and version; do not supply a client ID.
+
+### Cursor
+
+Add the hosted URL to your `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "silmaril-firewall": {
+      "url": "https://firewall-mcp.silmaril.dev/mcp"
+    }
+  }
+}
+```
+
+Connect and complete Silmaril login. After Silmaril upgrades the hosted MCP server, disconnect and reconnect once if the connection stops authorizing, so your client re-registers its OAuth callbacks.
+
+### What Login Decides
+
+When your MCP client connects, Silmaril login opens in the browser. Choose the customer organization you normally use for Silmaril. Your MCP access follows that organization and only returns Firewall data you are authorized to see. Client configuration does not grant tenant access on its own.
+
+You should not need to paste tokens, configure OAuth client IDs or secrets, or provide cloud credentials. The hosted MCP server issues a resource-bound MCP credential after Silmaril login and uses a separate verified Auth0 credential for the read-only evidence API.
+
+### Choosing Scopes
+
+When a client registers without requesting scopes, the MCP server grants `firewalls:read`, `metrics:read`, and `findings:read`. That set covers every aggregate workflow in this guide: firewall discovery, metrics, totals, grouping, compact finding previews, suspicious users, and investigation packets. ClickUp baseline setup uses that default; do not open Advanced to type scopes.
+
+Full finding payloads, trace evidence, and semantic conversation discovery require additional scopes that your account must already be authorized for. Those are not part of this baseline connection.
 
 ## First 10 Minutes
 
@@ -41,7 +80,7 @@ After connecting, start with this flow:
 
 1. Ask the agent to list your firewalls.
 2. Ask for schema/defaults so you know available ranges, filters, and limits.
-3. Ask for metrics and finding totals over the last day. When your organization has a default firewall, you can omit `firewall_id`.
+3. Take a baseline with `list_firewalls`, `get_metrics`, and `get_finding_totals`. Give metrics and totals the same absolute `startTime` and `endTime` instead of separate `range` presets, so the two responses describe the same window. Ask the agent to keep the coverage metadata from each response; it discloses attribution boundaries and is what makes later comparisons trustworthy. When your organization has a default firewall, you can omit `firewall_id`.
 4. Ask for the highest-risk findings with evidence IDs.
 5. Ask for suspicious users over a longer window if you are investigating abusive users or account farming.
 6. Use investigation packets before requesting full finding payloads or traces.

@@ -8,6 +8,7 @@ This page is for Silmaril operators who deploy or run the MCP server. Customer s
 
 For Vercel, configure Preview and Production independently. Each environment must point `FIREWALL_UI_BASE_URL` at the matching firewall-ui environment and `MCP_PUBLIC_BASE_URL` at its own stable public alias. Use different `MCP_OAUTH_STATE_SECRET` values for Preview and Production. Register the stable aliases and `/oauth/callback` URLs in Auth0; do not register ephemeral deployment URLs. The MCP project needs Auth0 public-client settings only and receives no AWS role or AWS credentials.
    For localhost testing, the Auth0 public MCP client must allow `http://localhost:3002/oauth/callback`; otherwise Auth0 will reject the local bridge with a callback URL mismatch.
+   Leave `MCP_OAUTH_ALLOWED_REDIRECT_URIS` empty unless a hosted client callback must be registered; see [Client Redirect Allowlist](#client-redirect-allowlist).
    Configure `MCP_AUDIT_URL` before enabling full finding or trace detail. Those
    tools fail closed when the audit sink is absent, times out, or rejects an
    event.
@@ -49,11 +50,68 @@ ephemeral Vercel deployment URL.
 | `MCP_PUBLIC_BASE_URL` | Stable MCP Preview alias | `https://firewall-mcp.silmaril.dev` |
 | `MCP_OAUTH_STATE_SECRET` | Preview-only 32+ byte secret | Separate Production 32+ byte secret |
 | `MCP_AUTH0_ORGANIZATION` | Unset for shared organization discovery | Unset for shared organization discovery |
+| `MCP_OAUTH_ALLOWED_REDIRECT_URIS` | Empty for loopback-only, or the exact Preview client callbacks | Empty for loopback-only, or the exact Production client callbacks |
 
 Register `${MCP_PUBLIC_BASE_URL}/oauth/callback` for each stable alias in the
 matching Auth0 public application. The MCP Vercel project must not receive
 `AWS_ROLE_ARN`, AWS access keys, or any other AWS permission; every evidence
 request goes through the matching firewall-ui environment with Auth0 OAuth.
+
+## Client Redirect Allowlist
+
+`MCP_OAUTH_ALLOWED_REDIRECT_URIS` accepts hosted client callbacks during dynamic
+client registration. It defaults to empty, which keeps registration
+loopback-only. Existing `http://localhost`, `http://127.0.0.1`, and IPv6 loopback
+callbacks keep working unchanged.
+
+Until this allowlist is set for that environment and the MCP app is deployed,
+hosted ClickUp and Cursor registration is rejected at the callback check.
+Enable the hosted callbacks first, then ask customers to connect. This describes
+implemented server behavior; it does not mean Preview or Production already has
+the allowlist configured. Other registration failures can still come from
+unsupported client metadata or an upstream outage.
+
+The value is a comma-separated allowlist of exact redirect URIs. Matching is
+exact string comparison with no prefix matching, no normalization, and no
+wildcards, so a trailing slash or a changed case is a different URI.
+
+Intended entries for Preview and Production:
+
+```
+MCP_OAUTH_ALLOWED_REDIRECT_URIS=https://search.clickup-prod.com/connect/mcp,https://www.cursor.com/agents/mcp/oauth/callback,cursor://anysphere.cursor-mcp/oauth/callback
+```
+
+HTTPS entries are accepted generally. The only accepted native-scheme value is
+that exact Cursor URI; other custom schemes are rejected. Entries carrying a
+fragment, embedded credentials, or a wildcard are rejected.
+
+Cursor 3.21.9 registers its native URI, its hosted HTTPS callback, and
+`http://localhost:8787/callback` together in one registration request.
+Registration validates the whole request, so every URI in it must pass;
+allowlisting part of the set does not yield a partially working client.
+
+Boundaries to keep in mind:
+
+- This list decides which callbacks may be registered. It does not grant tenant
+  membership or widen evidence scope; access still follows the authenticated
+  Silmaril organization and tenant.
+- Shared hosted deployments leave `MCP_AUTH0_ORGANIZATION` unset.
+- Browser origins stay separate. Use `MCP_ADDITIONAL_ALLOWED_ORIGINS` for those,
+  not this list.
+- Auth0 keeps only the stable MCP host `/oauth/callback` as an upstream redirect.
+  Do not add ClickUp or Cursor callbacks to Auth0.
+- Configure Preview and Production separately, each against its own stable alias.
+
+Removing an entry invalidates every signed registration that stored that URI.
+`decodeRegistration` rejects the entire client if any stored redirect is no longer
+allowed, so authorization, callback, token, and refresh all fail for that client,
+including requests that use another still-allowed callback. The client must
+re-register with the currently allowed callback set. Previously issued access
+tokens remain valid until ordinary expiry; removal is not immediate access-token
+revocation.
+
+Applying a change requires a Vercel deploy, which needs separate authority. No
+Firewall data-plane deploy or ECS smoke task is involved.
 
 ## Operator Notes
 
@@ -70,7 +128,8 @@ permission or return it in the MCP credential scope.
 
 The MCP host advertises itself as the authorization server for MCP clients. Its
 registration endpoint returns a unique signed client handle bound to exact HTTP
-loopback callbacks; it never exposes the shared Auth0 client ID. Every
+loopback callbacks plus any callbacks allowlisted through
+`MCP_OAUTH_ALLOWED_REDIRECT_URIS`; it never exposes the shared Auth0 client ID. Every
 authorization rejects `prompt=none`, requires S256 PKCE, and redirects directly
 to Auth0 for the only consent prompt through the fixed hosted callback. The
 bridge passes the validated dynamic client name and a display-safe callback as

@@ -23,9 +23,27 @@ Key terms:
 
 The MCP server is read-only. It cannot change Firewall policy, triage findings, invite users, block users, or modify your systems.
 
+## Connecting
+
+Setup is URL-only for every client. Use `https://firewall-mcp.silmaril.dev/mcp` and complete Silmaril login in the browser. The README has the per-client steps for Codex, ClickUp, and Cursor.
+
+Silmaril operators must enable hosted client callbacks on the MCP server before ClickUp or Cursor can finish automatic registration. Adding the URL in the client does not change that allowlist.
+
+Do not paste tokens, client IDs, secrets, or cloud credentials. For ClickUp, keep **Advanced configuration** closed so the client can register automatically. Opening Advanced makes Client ID required and is not part of this baseline setup.
+
+Your tenant access comes from the Silmaril organization you log in with, not from the client configuration. Adding the server does not grant access to a tenant you could not already see in Silmaril.
+
+### Scopes
+
+When a client registers without requesting scopes, the MCP server grants the aggregate set: `firewalls:read`, `metrics:read`, and `findings:read`. ClickUp baseline setup relies on that default. Do not open Advanced to type scopes.
+
+That set covers the aggregate and compact-evidence workflows below. Full finding payloads, traces, and semantic conversation discovery need extra scopes, and your Silmaril account must already be authorized for them. Those extra scopes are not part of this baseline connection.
+
 ## Recommended Tool Path
 
-Start broad, then narrow:
+On a new connection, take a baseline first: `list_firewalls`, then `get_metrics` and `get_finding_totals` over one absolute `startTime`/`endTime` window shared by both calls rather than two `range` presets. Keep the coverage metadata each response returns, because Global and regional views start at different attribution boundaries and that metadata is how you tell which rows a number includes.
+
+Then start broad and narrow:
 
 1. Use `list_firewalls` to discover available deployments.
 2. Use `get_firewall` to inspect runtime, freshness, warnings, and capabilities.
@@ -186,6 +204,12 @@ Poor agent behavior:
 ## Troubleshooting
 
 If login does not open, confirm your MCP client supports hosted MCP OAuth discovery and that you used the hosted MCP URL from the README.
+
+If a connection that used to work stops authorizing after a Silmaril MCP server upgrade, disconnect and reconnect once so your client re-registers its OAuth callbacks.
+
+If automatic client registration fails, keep **Advanced configuration** closed. That failure can mean hosted callback support is not enabled on this MCP environment, or it can come from unsupported client metadata or an upstream outage. Contact Silmaril with the client name and version; do not supply a client ID.
+
+When comparing the same measure, filter, and tenant over time, use one absolute window and keep the coverage metadata. Shared metrics and tenant metrics are different coverage; different metrics need not match.
 
 If login succeeds but no firewalls appear, confirm your Silmaril organization has access to at least one Firewall deployment.
 
