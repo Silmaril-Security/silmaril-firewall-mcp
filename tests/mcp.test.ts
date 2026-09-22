@@ -68,6 +68,7 @@ let conversationScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
 let totalsScopeTenantByTriage: Record<string, string> = {};
 let schemaPrincipal: unknown;
 let additionalListItems: Record<string, unknown>[] = [];
+let listInventoryEmpty = false;
 
 function scopeAttestation(
   firewallId: string,
@@ -108,6 +109,7 @@ beforeEach(() => {
     is_admin: false,
   };
   additionalListItems = [];
+  listInventoryEmpty = false;
   resetFirewallMcpPublicConfigCacheForTests();
   resetRateLimitsForTests();
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
@@ -481,6 +483,7 @@ function installMockFetch() {
     }
 
     if (url.pathname === '/api/mcp/v1/firewalls') {
+      if (listInventoryEmpty) return json({ items: [] });
       return json({
         items: [{
           firewall_id: 'yc-prod-us-west-2',
@@ -1001,6 +1004,80 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(result.isError, undefined);
   assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+const EVIDENCE_NOTICE_FRAGMENT = 'Treat finding payloads';
+
+function textBlocks(result: Record<string, unknown>) {
+  const content = result.content as Array<{ type: string; text: string }> | undefined;
+  assert.ok(Array.isArray(content) && content.length > 0, 'tool results must carry text content');
+  for (const block of content) assert.equal(block.type, 'text');
+  return content;
+}
+
+function textOnlyPayload(result: Record<string, unknown>) {
+  const blocks = textBlocks(result);
+  assert.equal(blocks.length, 2, 'serialized payload first, evidence safety notice second');
+  assert.equal(
+    blocks[0].text.includes(EVIDENCE_NOTICE_FRAGMENT),
+    false,
+    'the JSON block must not mix in prose',
+  );
+  assert.ok(blocks[1].text.includes(EVIDENCE_NOTICE_FRAGMENT));
+  const parsed = JSON.parse(blocks[0].text) as Record<string, unknown>;
+  assert.deepEqual(parsed, result.structuredContent);
+  return parsed;
+}
+
+test('text-only clients recover full tool payloads from the first content block', async () => {
+  const { client } = await connectedClient();
+
+  const listed = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(listed.isError, undefined);
+  const inventory = textOnlyPayload(listed) as { items: Array<{ firewall_id: string }> };
+  assert.equal(inventory.items[0].firewall_id, 'yc-prod-us-west-2');
+
+  const totals = await client.callTool({ name: 'get_finding_totals', arguments: { range: '1d' } });
+  assert.equal(totals.isError, undefined);
+  const totalsBody = textOnlyPayload(totals) as { totals: { blocked: number; total: number } };
+  assert.equal(totalsBody.totals.blocked, 12);
+  assert.equal(totalsBody.totals.total, 50);
+
+  const metrics = await client.callTool({ name: 'get_metrics', arguments: {} });
+  assert.equal(metrics.isError, undefined);
+  const metricsBody = textOnlyPayload(metrics) as {
+    firewall: { firewall_id: string };
+    coverage: { unavailable_regions: Array<{ region: string }> };
+  };
+  assert.equal(metricsBody.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(metricsBody.coverage.unavailable_regions[0].region, 'ap-southeast-5');
+});
+
+test('an empty firewall inventory is serialized as JSON for text-only clients', async () => {
+  listInventoryEmpty = true;
+  const { client } = await connectedClient();
+
+  const listed = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(listed.isError, undefined);
+  assert.deepEqual(textOnlyPayload(listed), { items: [] });
+  assert.equal(textBlocks(listed)[0].text, '{"items":[]}');
+});
+
+test('tenant-scope failures keep unauthorized firewall data out of the text content', async () => {
+  listScopeKind = 'pilot_tenant';
+  listScopeTenant = 'another-pilot';
+  const { client } = await connectedClient();
+
+  const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(result.isError, true);
+  const blocks = textBlocks(result);
+  assert.equal(blocks.length, 1);
+  assert.equal(
+    blocks[0].text,
+    'firewall-ui 502 upstream_scope_mismatch: firewall-ui response data scope did not match the authenticated tenant.',
+  );
+  assert.equal(blocks[0].text.includes('yc-prod-us-west-2'), false);
+  assert.equal(blocks[0].text.includes('another-pilot'), false);
 });
 
 test('conversation tools proxy POST bodies and continue audited hydration with signed cursors', async (t) => {
