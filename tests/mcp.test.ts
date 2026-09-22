@@ -2265,8 +2265,10 @@ test('dynamic registration defaults to aggregate scopes so detail requires expli
 
 test('dynamic registration retains exact configured native, hosted, and loopback callbacks', async () => {
   installMockFetch();
+  const nativeRedirectUri = 'cursor://anysphere.cursor-mcp/oauth/callback';
+  const defaultScopes = 'firewalls:read metrics:read findings:read';
   const redirects = [
-    'cursor://anysphere.cursor-mcp/oauth/callback',
+    nativeRedirectUri,
     'https://www.cursor.com/agents/mcp/oauth/callback',
     'http://localhost:8787/callback',
   ];
@@ -2284,6 +2286,45 @@ test('dynamic registration retains exact configured native, hosted, and loopback
 
   assert.equal(response.status, 201);
   assert.deepEqual(body.redirect_uris, redirects);
+  assert.equal(body.scope, defaultScopes);
+
+  const flow = await completeAuthorization(body.client_id, {
+    redirectUri: nativeRedirectUri,
+    scope: defaultScopes,
+  });
+  const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
+
+  assert.equal(flow.authorization.status, 302);
+  assert.equal(
+    flow.upstreamAuthorization.searchParams.get('redirect_uri'),
+    'https://mcp.test/oauth/callback',
+  );
+  assert.equal(flow.callback.status, 302);
+  assert.equal(callbackLocation.protocol, 'cursor:');
+  assert.equal(callbackLocation.hostname, 'anysphere.cursor-mcp');
+  assert.equal(callbackLocation.pathname, '/oauth/callback');
+  assert.equal(callbackLocation.searchParams.get('state'), 'codex-state');
+
+  const token = await handleTokenRequest(
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: body.client_id,
+        code: flow.bridgeCode,
+        redirect_uri: nativeRedirectUri,
+        code_verifier: flow.verifier,
+      }),
+    }),
+    readConfig(),
+  );
+  const tokenBody = await token.json();
+
+  assert.equal(token.status, 200);
+  assert.match(tokenBody.access_token, /^mcp_at_v1\./);
+  assert.match(tokenBody.refresh_token, /^mcp_rt_v1\./);
+  assert.equal(tokenBody.scope, defaultScopes);
 });
 
 test('hosted callback completes authorization, token, refresh, and authenticated MCP use', async () => {

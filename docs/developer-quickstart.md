@@ -102,9 +102,13 @@ Boundaries to keep in mind:
   Do not add ClickUp or Cursor callbacks to Auth0.
 - Configure Preview and Production separately, each against its own stable alias.
 
-Removing an entry is rechecked at authorization, callback, token, and refresh, so
-new authorizations and refreshes for that callback stop. Access tokens already
-issued remain valid until their normal expiry; removal is not a revocation.
+Removing an entry invalidates every signed registration that stored that URI.
+`decodeRegistration` rejects the entire client if any stored redirect is no longer
+allowed, so authorization, callback, token, and refresh all fail for that client,
+including requests that use another still-allowed callback. The client must
+re-register with the currently allowed callback set. Previously issued access
+tokens remain valid until ordinary expiry; removal is not immediate access-token
+revocation.
 
 Applying a change requires a Vercel deploy, which needs separate authority. No
 Firewall data-plane deploy or ECS smoke task is involved.
