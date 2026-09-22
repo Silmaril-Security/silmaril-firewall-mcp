@@ -22,6 +22,7 @@ import {
   mcpResource,
   validateMcpRefreshToken,
 } from './oauth-credentials';
+import { isAllowedOAuthRedirectUri } from './oauth-redirect-policy';
 import { publicBaseUrl } from './oauth-metadata';
 import { decodeUtf8, readBoundedBody } from './bounded-body';
 
@@ -52,7 +53,7 @@ const UpstreamAuthorizationServerMetadataSchema = z.object({
 }).passthrough();
 
 const ClientRegistrationRequestSchema = z.object({
-  redirect_uris: z.array(z.string().max(2_048).url()).min(1).max(8),
+  redirect_uris: z.array(z.string().min(1).max(2_048)).min(1).max(8),
   grant_types: z.array(z.string().min(1)).optional(),
   response_types: z.array(z.string().min(1)).optional(),
   scope: z.string().min(1).max(2_048).optional(),
@@ -306,7 +307,18 @@ function encodeRegistration(registration: ClientRegistration, config: ServerConf
 }
 
 function decodeRegistration(value: string | null, config: ServerConfig): ClientRegistration {
-  return decodeSigned(value, 'dcr2', ClientRegistrationSchema, REGISTRATION_MAX_AGE_MS, config);
+  const registration = decodeSigned(
+    value,
+    'dcr2',
+    ClientRegistrationSchema,
+    REGISTRATION_MAX_AGE_MS,
+    config,
+  );
+  if (registration.redirect_uris.some((uri) =>
+    !isAllowedOAuthRedirectUri(uri, config.oauthAllowedRedirectUris))) {
+    throw new Error('Dynamic client registration redirect policy changed.');
+  }
+  return registration;
 }
 
 function encodeBridgeState(state: BridgeState, config: ServerConfig): string {
@@ -331,16 +343,6 @@ function s256Challenge(verifier: string): string {
 
 function validPkceValue(value: string | null): value is string {
   return Boolean(value && PKCE_VALUE_RE.test(value));
-}
-
-function isLoopbackRedirectUri(value: string): boolean {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'http:' || url.hash || url.username || url.password) return false;
-    return url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]';
-  } catch {
-    return false;
-  }
 }
 
 function scopes(value: string): string[] {
@@ -964,8 +966,11 @@ export async function handleClientRegistrationRequest(
       error_description: err instanceof Error ? err.message : 'Invalid dynamic client registration request.',
     }, { status: 400 });
   }
-  if (registration.redirect_uris.some((uri) => !isLoopbackRedirectUri(uri))) {
-    return invalidClientMetadata('redirect_uris must be exact HTTP loopback callback URLs without fragments.');
+  if (registration.redirect_uris.some((uri) =>
+    !isAllowedOAuthRedirectUri(uri, config.oauthAllowedRedirectUris))) {
+    return invalidClientMetadata(
+      'redirect_uris must contain only safe HTTP loopback URLs or exact configured callback URLs.',
+    );
   }
   const grantTypesError = unsupportedRegistrationValues(
     'grant_types',

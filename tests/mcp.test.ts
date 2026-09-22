@@ -116,6 +116,7 @@ beforeEach(() => {
   delete process.env.AUTH0_MCP_AUDIENCE;
   process.env.MCP_PUBLIC_BASE_URL = 'https://mcp.test';
   process.env.MCP_OAUTH_STATE_SECRET = 'test-oauth-state-secret-with-enough-entropy'; // pragma: allowlist secret
+  delete process.env.MCP_OAUTH_ALLOWED_REDIRECT_URIS;
   delete process.env.MCP_AUTH0_ORGANIZATION;
   delete process.env.MCP_AUDIT_URL;
   delete process.env.MCP_MAX_REQUEST_BYTES;
@@ -336,7 +337,7 @@ function installMockFetch() {
           refresh_token: omitRotatedRefreshToken ? undefined : 'upstream-refresh-token',
           token_type: 'Bearer',
           expires_in: 3600,
-          scope: 'firewalls:read metrics:read offline_access',
+          scope: 'firewalls:read metrics:read findings:read offline_access',
         });
       }
 
@@ -611,6 +612,23 @@ function installMockFetch() {
           available_regions: ['us-west-2', 'eu-west-1', 'ap-southeast-2'],
           unavailable_regions: [{ region: 'ap-southeast-5', code: 'metrics_unavailable' }],
         },
+        received: Object.fromEntries(url.searchParams),
+      });
+    }
+
+    if (url.pathname === '/api/mcp/v1/firewalls/default/findings/totals') {
+      return json({
+        firewall: {
+          firewall_id: 'clickup-cascade-alpha',
+          data_scope: scopeAttestation('clickup-cascade-alpha'),
+        },
+        time_window: url.searchParams.get('range') ?? '1d',
+        totals: {
+          blocked: 12,
+          blockedMetricReady: true,
+          total: 50,
+        },
+        generated_at: '2026-06-27T00:00:00.000Z',
         received: Object.fromEntries(url.searchParams),
       });
     }
@@ -2245,26 +2263,252 @@ test('dynamic registration defaults to aggregate scopes so detail requires expli
   assert.equal(body.scope.includes('trace:read'), false);
 });
 
-test('dynamic client registration rejects callbacks authorize would reject', async () => {
+test('dynamic registration retains exact configured native, hosted, and loopback callbacks', async () => {
   installMockFetch();
+  const redirects = [
+    'cursor://anysphere.cursor-mcp/oauth/callback',
+    'https://www.cursor.com/agents/mcp/oauth/callback',
+    'http://localhost:8787/callback',
+  ];
+  process.env.MCP_OAUTH_ALLOWED_REDIRECT_URIS = redirects.slice(0, 2).join(',');
 
   const response = await handleClientRegistrationRequest(
     new Request('https://mcp.test/oauth/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        redirect_uris: ['https://client.example/callback'],
-        grant_types: ['authorization_code'],
-        response_types: ['code'],
-      }),
+      body: JSON.stringify({ redirect_uris: redirects }),
     }),
     readConfig(),
   );
   const body = await response.json();
 
-  assert.equal(response.status, 400);
-  assert.equal(body.error, 'invalid_client_metadata');
-  assert.equal(body.error_description, 'redirect_uris must be exact HTTP loopback callback URLs without fragments.');
+  assert.equal(response.status, 201);
+  assert.deepEqual(body.redirect_uris, redirects);
+});
+
+test('hosted callback completes authorization, token, refresh, and authenticated MCP use', async () => {
+  installMockFetch();
+  const redirectUri = 'https://search.clickup-prod.com/connect/mcp';
+  const defaultScopes = 'firewalls:read metrics:read findings:read';
+  process.env.MCP_OAUTH_ALLOWED_REDIRECT_URIS = redirectUri;
+  const registration = await handleClientRegistrationRequest(
+    new Request('https://mcp.test/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        redirect_uris: [redirectUri],
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none',
+        client_name: 'ClickUp MCP',
+      }),
+    }),
+    readConfig(),
+  );
+  const registrationBody = await registration.json();
+  const clientId = registrationBody.client_id;
+  assert.equal(registration.status, 201);
+  assert.equal(registrationBody.scope, defaultScopes);
+  const flow = await completeAuthorization(clientId, {
+    redirectUri,
+    scope: defaultScopes,
+  });
+  const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
+
+  const token = await handleTokenRequest(
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code: flow.bridgeCode,
+        redirect_uri: redirectUri,
+        code_verifier: flow.verifier,
+      }),
+    }),
+    readConfig(),
+  );
+  const tokenBody = await token.json();
+
+  assert.equal(flow.authorization.status, 302);
+  assert.equal(
+    flow.upstreamAuthorization.searchParams.get('scope'),
+    `${defaultScopes} offline_access`,
+  );
+  assert.equal(flow.callback.status, 302);
+  assert.equal(callbackLocation.origin, 'https://search.clickup-prod.com');
+  assert.equal(callbackLocation.pathname, '/connect/mcp');
+  assert.equal(callbackLocation.searchParams.get('state'), 'codex-state');
+  assert.equal(token.status, 200);
+  assert.match(tokenBody.access_token, /^mcp_at_v1\./);
+  assert.match(tokenBody.refresh_token, /^mcp_rt_v1\./);
+  assert.equal(tokenBody.scope, defaultScopes);
+
+  const refresh = await handleTokenRequest(
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: clientId,
+        refresh_token: tokenBody.refresh_token,
+      }),
+    }),
+    readConfig(),
+  );
+  assert.equal(refresh.status, 200);
+  const refreshBody = await refresh.json();
+  assert.match(refreshBody.refresh_token, /^mcp_rt_v1\./);
+  assert.equal(refreshBody.scope, defaultScopes);
+
+  const { client } = await connectedClient(tokenBody.access_token);
+  const tools = await client.listTools();
+  assert.ok(tools.tools.some((tool) => tool.name === 'list_firewalls'));
+  for (const name of ['list_firewalls', 'get_metrics', 'get_finding_totals']) {
+    const result = await client.callTool({ name, arguments: {} });
+    assert.equal(
+      result.isError,
+      undefined,
+      `${name} should succeed with default aggregate scopes: ${JSON.stringify(result.structuredContent)}`,
+    );
+  }
+});
+
+test('redirect policy removal revokes signed registration at every OAuth endpoint but not access tokens', async () => {
+  installMockFetch();
+  const redirectUri = 'https://search.clickup-prod.com/connect/mcp';
+  process.env.MCP_OAUTH_ALLOWED_REDIRECT_URIS = redirectUri;
+  const clientId = await registerClient([redirectUri], 'firewalls:read metrics:read');
+
+  const authorizationParams = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    scope: 'firewalls:read metrics:read',
+    resource: 'https://mcp.test/mcp',
+    code_challenge: TEST_CODE_CHALLENGE,
+    code_challenge_method: 'S256',
+  });
+  const authorization = await handleAuthorizationRequest(
+    new Request(`https://mcp.test/oauth/authorize?${authorizationParams}`),
+    readConfig(),
+  );
+  const bridgeState = new URL(authorization.headers.get('location') ?? '').searchParams.get('state') ?? '';
+  const callback = await handleOAuthCallbackRequest(
+    new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
+      code: 'auth0-code',
+      state: bridgeState,
+    })),
+    readConfig(),
+  );
+  const bridgeCode = new URL(callback.headers.get('location') ?? '').searchParams.get('code') ?? '';
+  const token = await handleTokenRequest(
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code: bridgeCode,
+        redirect_uri: redirectUri,
+        code_verifier: TEST_CODE_VERIFIER,
+      }),
+    }),
+    readConfig(),
+  );
+  const tokenBody = await token.json();
+  assert.equal(token.status, 200);
+  tokenCalls = [];
+  delete process.env.MCP_OAUTH_ALLOWED_REDIRECT_URIS;
+
+  const removedAuthorization = await handleAuthorizationRequest(
+    new Request(`https://mcp.test/oauth/authorize?${authorizationParams}`),
+    readConfig(),
+  );
+  assert.equal(removedAuthorization.status, 400);
+  assert.equal((await removedAuthorization.json()).error, 'invalid_request');
+
+  const removedCallback = await handleOAuthCallbackRequest(
+    new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
+      code: 'auth0-code',
+      state: bridgeState,
+    })),
+    readConfig(),
+  );
+  assert.equal(removedCallback.status, 400);
+  assert.equal((await removedCallback.json()).error_description, 'Invalid OAuth bridge state.');
+
+  for (const params of [
+    new URLSearchParams({
+      grant_type: 'authorization_code',
+      client_id: clientId,
+      code: bridgeCode,
+      redirect_uri: redirectUri,
+      code_verifier: TEST_CODE_VERIFIER,
+    }),
+    new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: clientId,
+      refresh_token: tokenBody.refresh_token,
+    }),
+  ]) {
+    const denied = await handleTokenRequest(
+      new Request('https://mcp.test/oauth/token', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: params,
+      }),
+      readConfig(),
+    );
+    assert.equal(denied.status, 400);
+    assert.equal((await denied.json()).error, 'invalid_client');
+  }
+  assert.equal(tokenCalls.length, 0);
+
+  const { client } = await connectedClient(tokenBody.access_token);
+  assert.ok((await client.listTools()).tools.length > 0);
+});
+
+test('dynamic client registration rejects callbacks authorize would reject', async () => {
+  installMockFetch();
+  const allowed = 'https://www.cursor.com/agents/mcp/oauth/callback';
+  process.env.MCP_OAUTH_ALLOWED_REDIRECT_URIS = allowed;
+  const cases = [
+    ['https://client.example/callback'],
+    ['https://cursor.com/agents/mcp/oauth/callback'],
+    ['https://www.cursor.com/agents/mcp/oauth/other'],
+    ['https://www.cursor.com:444/agents/mcp/oauth/callback'],
+    ['https://www.cursor.com/agents/mcp/oauth/callback?source=test'],
+    ['https://WWW.cursor.com/agents/mcp/oauth/callback'],
+    ['https://www.cursor.com/agents/mcp/oauth/callback/'],
+    ['https://www.cursor.com/agents/mcp/oauth/callback#'],
+    ['https://user@www.cursor.com/agents/mcp/oauth/callback'],
+    [allowed, 'https://unapproved.example/callback'],
+  ];
+
+  for (const redirectUris of cases) {
+    const response = await handleClientRegistrationRequest(
+      new Request('https://mcp.test/oauth/register', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          redirect_uris: redirectUris,
+          grant_types: ['authorization_code'],
+          response_types: ['code'],
+        }),
+      }),
+      readConfig(),
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(body.error, 'invalid_client_metadata');
+    assert.equal(
+      body.error_description,
+      'redirect_uris must contain only safe HTTP loopback URLs or exact configured callback URLs.',
+    );
+  }
 });
 
 test('dynamic client registration rejects unsupported OAuth capabilities', async () => {
