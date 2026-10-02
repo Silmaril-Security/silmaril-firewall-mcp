@@ -85,8 +85,7 @@ HTTPS entries are accepted generally. The only accepted native-scheme value is
 that exact Cursor URI; other custom schemes are rejected. Entries carrying a
 fragment, embedded credentials, or a wildcard are rejected.
 
-Cursor 3.21.9 registers its native URI, its hosted HTTPS callback, and
-`http://localhost:8787/callback` together in one registration request.
+A client can register hosted, native, and loopback callbacks together in one registration request.
 Registration validates the whole request, so every URI in it must pass;
 allowlisting part of the set does not yield a partially working client.
 
@@ -96,8 +95,7 @@ Boundaries to keep in mind:
   membership or widen evidence scope; access still follows the authenticated
   Silmaril organization and tenant.
 - Shared hosted deployments leave `MCP_AUTH0_ORGANIZATION` unset.
-- Browser origins stay separate. Use `MCP_ADDITIONAL_ALLOWED_ORIGINS` for those,
-  not this list.
+- Browser origins stay separate. A missing `Origin` is allowed. An `Origin` must match the built-in set `https://chatgpt.com`, `https://chat.openai.com`, and `https://codex.openai.com`, plus comma-separated entries in `MCP_ADDITIONAL_ALLOWED_ORIGINS` or `MCP_ALLOWED_ORIGINS`. Those variables add origins; they do not replace the built-in set. Do not put browser origins on this redirect list.
 - Auth0 keeps only the stable MCP host `/oauth/callback` as an upstream redirect.
   Do not add ClickUp or Cursor callbacks to Auth0.
 - Configure Preview and Production separately, each against its own stable alias.
@@ -126,29 +124,27 @@ bridge adds `offline_access` only to its upstream Auth0 authorization request. I
 does not advertise that authorization-server scope as a Firewall MCP resource
 permission or return it in the MCP credential scope.
 
-The MCP host advertises itself as the authorization server for MCP clients. Its
+The MCP host advertises itself as the authorization server for MCP clients. The same metadata document is served at `/.well-known/oauth-authorization-server` and `/.well-known/openid-configuration`. Its
 registration endpoint returns a unique signed client handle bound to exact HTTP
 loopback callbacks plus any callbacks allowlisted through
-`MCP_OAUTH_ALLOWED_REDIRECT_URIS`; it never exposes the shared Auth0 client ID. Every
+`MCP_OAUTH_ALLOWED_REDIRECT_URIS`; it never exposes the shared Auth0 client ID. Registrations expire after 30 days. Every
 authorization rejects `prompt=none`, requires S256 PKCE, and redirects directly
-to Auth0 for the only consent prompt through the fixed hosted callback. The
+to Auth0 for the only consent prompt through the fixed hosted callback. Authorization codes and bridge state expire after 10 minutes. The
 bridge passes the validated dynamic client name and a display-safe callback as
 `ext-mcp-client-name` and `ext-mcp-client-callback`; the Auth0 hosted consent
 template must render both values so the user can identify the client receiving
 access. Treat both display values as untrusted text and rely on Auth0 template
-escaping. The token endpoint verifies the returned Auth0 JWT signature, issuer,
+escaping. The token endpoint verifies the returned Auth0 JWT RS256 signature, issuer,
 audience, and expiry before issuing an encrypted credential bound to either
 `/mcp` or `/admin/mcp`. The
 inbound MCP credential is never forwarded to `firewall-ui`. Redirects are
 disabled on every credential-bearing server-to-server request.
 
 When a client omits `scope` during registration, it receives aggregate scopes
-only: `firewalls:read`, `metrics:read`, and `findings:read`. Full finding and
-trace access therefore requires explicit scope consent. Semantic conversation
-discovery likewise requires explicit `conversations:read` consent. Refresh credentials are
+only: `firewalls:read`, `metrics:read`, and `findings:read`. `get_finding` requires explicit `findings:detail` and `payload:read`. `get_finding_trace` and `get_conversation` require explicit `trace:read`. `search_conversations`, `list_conversation_topics`, and `get_conversation_topic` require explicit `conversations:read`. If registration omits `grant_types`, the server records both `authorization_code` and `refresh_token`. Refresh credentials are
 bound to the dynamic client and original resource, refresh requests cannot
 expand scopes, and the bridge requires Auth0 refresh-token rotation before
-returning a replacement credential.
+returning a replacement credential. The sealed MCP refresh credential expires 30 days after issue. Access-token expiry follows the upstream `expires_in`, capped by the verified JWT `exp`.
 
 When `MCP_AUTH0_ORGANIZATION` is unset and the client does not send an Auth0 organization ID, the MCP OAuth bridge forwards no `organization` parameter so Auth0 can prompt for or discover the organization. If a client explicitly sends `organization=org_...`, the bridge passes it through. Non-ID organization values are rejected locally instead of being forwarded to Auth0.
 
@@ -165,43 +161,40 @@ results.
 
 ## Security Limits And Audit
 
-Every public MCP request revalidates its downstream credential through
-`GET /api/mcp/v1/schema`. Its `principal` attestation carries the verified
+Public MCP requests that pass origin, credential, body, rate-limit, and scope checks revalidate the downstream credential through
+`GET /api/mcp/v1/schema` before the tool server handles it. Missing tokens, invalid credentials, disallowed origins, quota rejections, and insufficient-scope rejections stop before that call. When present, the `principal` attestation carries the verified
 subject, organization, tenant, and global `is_admin` flag. The proxy binds that
 identity to the MCP credential before using it for pilot-scope checks. Admin
 authority is refreshed per request and cannot be supplied through tool arguments.
 The OAuth bridge reads firewall-ui's namespaced tenant claim; existing MCP
 credentials without a tenant recover it from the verified preflight.
 
-Deploy firewall-ui's additive schema attestation before this proxy change.
-With an older firewall-ui response, the proxy retains tenant-only checks and
+`firewall-ui` must return that additive schema `principal` for global-admin pilot access.
+When the schema response omits `principal`, the proxy retains tenant-only checks and
 does not grant cross-tenant pilot access. Rolling back either side restores
 those restrictive checks without changing stored tenant data or credentials.
 
 The MCP route rejects invalid credentials before JSON-RPC handling, rejects
 JSON-RPC batches and non-JSON or oversized requests, and applies an actor/client
-token bucket before upstream work. Higher-amplification tools consume weighted
-quota. `MCP_RATE_LIMIT_REQUESTS_PER_SECOND` defaults to 5,
+token bucket before upstream work. Higher-amplification `tools/call` costs are
+`list_suspicious_users` 5; `group_findings`, `search_conversations`, and `get_conversation` 3; `get_investigation_packet`, `get_finding`, `get_finding_trace`, `list_conversation_topics`, and `get_conversation_topic` 2. Every other call costs 1.
+`MCP_RATE_LIMIT_REQUESTS_PER_SECOND` defaults to 5,
 `MCP_RATE_LIMIT_BURST` defaults to 10, and `MCP_MAX_REQUEST_BYTES` defaults to
-256,000. Platform-level Vercel rate controls should remain enabled because the
+256,000. Positive values are floored and clamped to 20 requests per second, burst 100, and 1,000,000 request bytes. A tool cost is also capped by the configured burst. `MCP_MAX_RESPONSE_BYTES` defaults to 1,000,000 and clamps to 5,000,000. For these numeric limits, and for the timeout, cache, and audit settings below, non-positive or non-numeric values use the defaults. Platform-level Vercel rate controls should remain enabled because the
 application bucket is per warm runtime instance.
 
-All upstream requests have a deadline controlled by
-`MCP_UPSTREAM_TIMEOUT_MS` (10 seconds by default). Public OAuth configuration is
-cached for `MCP_PUBLIC_CONFIG_CACHE_MS` (30 seconds by default) to bound
+`MCP_UPSTREAM_TIMEOUT_MS` defaults to 10 seconds and clamps to 30 seconds. `search_conversations` and `get_conversation` use at least 25 seconds (`max(MCP_UPSTREAM_TIMEOUT_MS, 25000)`). Other upstream calls use the configured timeout. Public OAuth configuration is
+cached for `MCP_PUBLIC_CONFIG_CACHE_MS` (30 seconds by default, clamped to 300 seconds) to bound
 discovery amplification.
 
-`get_finding` and `get_finding_trace` return evidence only after
-`MCP_AUDIT_URL` accepts one metadata-only event. The event includes a unique
-event ID, actor subject/email, tenant, organization, OAuth client, target IDs,
-reason, outcome, timestamp, correlation ID, token ID, and deployment version.
-It excludes access tokens, payloads, and traces. `MCP_AUDIT_TIMEOUT_MS`
-defaults to 3 seconds.
+`get_finding`, `get_finding_trace`, and `get_conversation` return evidence only after
+`MCP_AUDIT_URL` accepts one metadata-only event. The event includes `event_id`, `occurred_at`, actor subject and email, tenant, organization, OAuth client, `token_id`, `tool_name`, `target_firewall_id`, reason, outcome, `correlation_id`, and `deployment_version`. Finding tools record `target_finding_id`. `get_conversation` records `target_type` `conversation` and `target_reference_sha256` of the handle, not the raw handle.
+The event excludes access tokens, payloads, traces, and conversation text. `MCP_AUDIT_TIMEOUT_MS`
+defaults to 3 seconds and clamps to 10 seconds.
 
 The separate `/admin/mcp` resource exposes only
-`get_mcp_adoption_summary` and `list_mcp_activity`. Before constructing that
-server, the host calls `firewall-ui` to require `firewalls:read` and a verified
-global Silmaril admin claim. Its protected-resource metadata is at
+`get_mcp_adoption_summary` and `list_mcp_activity`. Both accept `range` of `1d`, `7d`, `30d`, or `90d` (default `30d`) and an optional `tenant`. `list_mcp_activity` also accepts `actor_email`, `tool_name`, `outcome` (`success` or `error`), and `limit` from 1 to 100 (default 50). Before constructing that
+server, the host calls `firewall-ui` `GET /api/mcp/v1/admin/access`. The two tools also require `firewalls:read` on the MCP credential. Its protected-resource metadata is at
 `/.well-known/oauth-protected-resource/admin-mcp`.
 
 ## Local Validation

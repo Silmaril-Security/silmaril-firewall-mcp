@@ -5,9 +5,9 @@
 - Auth0 access-token signatures, issuer, audience, and expiry are validated at token exchange and again by `firewall-ui` when the separate downstream credential is used.
 - The MCP route decrypts and validates a resource-bound MCP bearer before every non-OPTIONS request. Direct Auth0 JWTs and malformed, expired, or wrong-resource credentials fail at the HTTP boundary with `401`.
 - OAuth Protected Resource Metadata is available at `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`.
-- OAuth Authorization Server Metadata is available at `/.well-known/oauth-authorization-server` with unique signed dynamic registrations, exact loopback callback binding, Auth0-hosted consent that displays the validated dynamic client name and display-safe callback, hosted callback bridging, and encrypted token exchange.
-- Missing-token `401` responses include `WWW-Authenticate` with `resource_metadata` and aggregate/search scope guidance.
-- The MCP route rejects disallowed `Origin` headers before MCP message handling.
+- OAuth Authorization Server Metadata is available at `/.well-known/oauth-authorization-server` and `/.well-known/openid-configuration` with unique signed dynamic registrations, exact loopback callback binding, Auth0-hosted consent that displays the validated dynamic client name and display-safe callback, hosted callback bridging, and encrypted token exchange.
+- Missing-token `401` responses include `WWW-Authenticate` with `resource_metadata`. The public challenge `scope` is `firewalls:read metrics:read findings:read`. The admin challenge `scope` is `firewalls:read`. Protected-resource `scopes_supported` follows firewall-ui for `/mcp`, and is only `firewalls:read` for `/admin/mcp`.
+- The MCP route rejects disallowed `Origin` headers before MCP message handling. A missing `Origin` is allowed. The built-in allowlist is `https://chatgpt.com`, `https://chat.openai.com`, and `https://codex.openai.com`, extended by `MCP_ADDITIONAL_ALLOWED_ORIGINS` and `MCP_ALLOWED_ORIGINS`.
 - The MCP server never forwards the inbound MCP bearer. It extracts and forwards only the separately wrapped Auth0 credential to the configured `FIREWALL_UI_BASE_URL`.
 - The MCP server discovers issuer, audience/resource, scopes, and public OAuth client ID from `firewall-ui` `/api/mcp/v1/config`.
 - The OAuth bridge sends no Auth0 organization parameter for shared hosted deployments, allowing Auth0 Universal Login to prompt for or discover the organization.
@@ -16,8 +16,8 @@
 - `firewall-ui` rejects wrong issuer, wrong audience, expiry, missing org, missing tenant, missing admin claim, and missing scopes.
 - Cross-tenant resource probes are re-scoped through `firewall-ui` deployment lookup and return deterministic `404`.
 - Managed-pilot authority is derived from the verified Auth0 organization and tenant. Every currently active runtime key bound to that pair is included; caller-supplied tenant or key selectors cannot widen the boundary.
-- Firewall-scoped upstream responses carry a non-sensitive `data_scope` attestation. The MCP proxy fails closed when it is missing and rejects pilot attestations that do not match the authenticated tenant.
-- `/admin/mcp` has separate protected-resource metadata and calls the `firewall-ui` admin-access endpoint before constructing or exposing its two tools.
+- Tenant-scoped evidence responses carry a non-sensitive `data_scope` attestation. The MCP proxy fails closed when `kind`, `firewall_id`, or `tenant` is missing. A `pilot_tenant` attestation for a different tenant fails with `502` `upstream_scope_mismatch` unless the schema principal has `is_admin: true`. `get_schema` is not attested.
+- `/admin/mcp` has separate protected-resource metadata and calls `GET /api/mcp/v1/admin/access` before constructing or exposing `get_mcp_adoption_summary` and `list_mcp_activity`. Calling those tools also requires `firewalls:read`.
 
 ## Tool Surface
 
@@ -27,11 +27,11 @@
 - `list_suspicious_users` requires only aggregate findings access upstream and returns minimized evidence handles, derived abuse categories, bot-farming scores, and missing-metadata diagnostics.
 - Bot-farming correlation is a prioritization boost only; suspicious-user inclusion must come from true-positive abuse evidence.
 - Suspicious-user score fields use explicit 0-100 percentage names such as `suspicious_score_percent`, `bot_farming.score_percent`, and `bot_farming.signals.*.score_percent`.
-- Detail tools require `reason` and upstream detail scopes.
-- Detail tools are marked restricted, are excluded from read-only auto-approval hints, and require explicit OAuth detail scopes.
-- Page size is capped at 100 and firewall-ui rejects unbounded time windows.
+- `get_finding` requires `findings:detail` and `payload:read`. `get_finding_trace` and `get_conversation` require `trace:read`. All three require a `reason` of 8 to 512 characters.
+- Those three tools are marked restricted, are excluded from read-only auto-approval hints, and require the scopes above. Conversation search and topic tools require `conversations:read` and stay read-only.
+- `list_findings` `pageSize`, conversation search `page_size`, and topic-detail `page_size` are capped at 100. Topic-list `page_size` is capped at 50. Finding `range` is one of `5m`, `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `3d`, `1w`, or `30d`. Conversation search and topics use `1d`, `7d`, `30d`, or `90d`.
 - JSON-RPC batches, non-JSON requests, and request bodies over `MCP_MAX_REQUEST_BYTES` are rejected before MCP processing.
-- Per-actor/client weighted quotas return deterministic `429` before upstream fan-out; Vercel platform rate controls provide the distributed outer limit.
+- Per-actor/client weighted quotas return deterministic `429` before upstream fan-out. Costs above 1 are `list_suspicious_users` 5; `group_findings`, `search_conversations`, and `get_conversation` 3; `get_investigation_packet`, `get_finding`, `get_finding_trace`, `list_conversation_topics`, and `get_conversation_topic` 2. Vercel platform rate controls provide the distributed outer limit.
 - MCP response byte size is capped by `MCP_MAX_RESPONSE_BYTES`.
 - Managed-pilot conversation search uses the existing shared vector index with mandatory scope-schema, scope-ID, generation, time, and active API-key filters. Hydration rechecks the scope-bound control record and applies the same active API-key set to Athena.
 - Public activity telemetry emits once per logical handler call and excludes initialization, discovery, input validation failures, and all admin MCP calls.
@@ -41,7 +41,7 @@
 - No raw Authorization headers are logged.
 - No raw finding payloads or trace text are logged.
 - Sensitive detail is withheld unless a durable audit sink accepts one uniquely identified event.
-- Metadata-only audit records include actor, tenant, organization, OAuth client, tool, target IDs, reason, outcome, timestamp, correlation ID, token ID, and deployment version.
+- Metadata-only audit records include actor, tenant, organization, OAuth client, tool, `target_firewall_id`, reason, outcome, timestamp, correlation ID, token ID, and deployment version. Finding tools add `target_finding_id`. `get_conversation` adds a SHA-256 of the handle (`target_reference_sha256`) and does not record the raw handle.
 - Canary payload tests prove payload text is absent from audit bodies and console output.
 - Tool instructions tell agents to treat finding content as hostile prompt-injection data.
 - JA4 and other fingerprint-derived fields are not exposed by the MCP server; when absent, firewall-ui returns unavailable signal diagnostics instead of zero scores.
