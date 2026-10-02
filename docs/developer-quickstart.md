@@ -162,17 +162,23 @@ results.
 ## Security Limits And Audit
 
 Public MCP requests that pass origin, credential, body, rate-limit, and scope checks revalidate the downstream credential through
-`GET /api/mcp/v1/schema` before the tool server handles it. Missing tokens, invalid credentials, disallowed origins, quota rejections, and insufficient-scope rejections stop before that call. When present, the `principal` attestation carries the verified
+the scope-neutral `GET /api/mcp/v1/principal` endpoint before the tool server handles them. Missing tokens, invalid credentials, disallowed origins, quota rejections, and insufficient-scope rejections stop before that call. A successful response must carry a valid `principal` attestation with the verified
 subject, organization, tenant, and global `is_admin` flag. The proxy binds that
 identity to the MCP credential before using it for pilot-scope checks. Admin
 authority is refreshed per request and cannot be supplied through tool arguments.
 The OAuth bridge reads firewall-ui's namespaced tenant claim; existing MCP
 credentials without a tenant recover it from the verified preflight.
 
-`firewall-ui` must return that additive schema `principal` for global-admin pilot access.
-When the schema response omits `principal`, the proxy retains tenant-only checks and
-does not grant cross-tenant pilot access. Rolling back either side restores
-those restrictive checks without changing stored tenant data or credentials.
+Missing or malformed principal attestations fail closed with `502`
+`upstream_scope_unverified`; subject, organization, or tenant mismatches fail
+with `502` `upstream_scope_mismatch`. There is no fallback to the schema route.
+The `get_schema` tool still calls `GET /api/mcp/v1/schema` and still requires
+`firewalls:read`.
+
+Release dependency: the scope-neutral principal endpoint from
+[`firewall-ui` PR 295](https://github.com/Silmaril-Security/firewall-ui/pull/295)
+must be released before this MCP consumer. This change does not include a
+deployment.
 
 The MCP route rejects invalid credentials before JSON-RPC handling, rejects
 JSON-RPC batches and non-JSON or oversized requests, and applies an actor/client

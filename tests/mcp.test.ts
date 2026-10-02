@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import test, { afterEach, beforeEach } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {
   exportJWK,
   generateKeyPair,
+  jwtVerify,
   SignJWT,
 } from 'jose';
 import { handleMcpRequest } from '../src/http';
@@ -66,9 +68,16 @@ let findingScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
 let conversationScopeTenant = 'acme';
 let conversationScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
 let totalsScopeTenantByTriage: Record<string, string> = {};
-let schemaPrincipal: unknown;
+let principalAttestation: unknown;
 let additionalListItems: Record<string, unknown>[] = [];
 let listInventoryEmpty = false;
+
+const defaultPrincipalAttestation = {
+  subject: 'auth0|user',
+  organization_id: 'org_acme',
+  tenant: 'acme',
+  is_admin: false,
+};
 
 function scopeAttestation(
   firewallId: string,
@@ -102,12 +111,7 @@ beforeEach(() => {
   conversationScopeTenant = 'acme';
   conversationScopeKind = 'deployment';
   totalsScopeTenantByTriage = {};
-  schemaPrincipal = {
-    subject: 'auth0|user',
-    organization_id: 'org_acme',
-    tenant: 'acme',
-    is_admin: false,
-  };
+  principalAttestation = { ...defaultPrincipalAttestation };
   additionalListItems = [];
   listInventoryEmpty = false;
   resetFirewallMcpPublicConfigCacheForTests();
@@ -188,10 +192,24 @@ function mcpAccessToken(
   ],
   clientId = 'dcr-test-client',
 ): string {
+  return mcpAccessTokenForDownstream(
+    grantedScopes,
+    mode === 'admin' ? 'silmaril-admin-access-token' : 'user-access-token',
+    mode,
+    clientId,
+  );
+}
+
+function mcpAccessTokenForDownstream(
+  grantedScopes: string[],
+  downstreamToken: string,
+  mode: 'public' | 'admin' = 'public',
+  clientId = 'dcr-test-client',
+): string {
   const config = readConfig();
   return issueMcpCredential({
     kind: 'access',
-    downstream_token: mode === 'admin' ? 'silmaril-admin-access-token' : 'user-access-token',
+    downstream_token: downstreamToken,
     client_id: clientId,
     resource: mcpResource(config, mode),
     scopes: grantedScopes,
@@ -427,15 +445,19 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/schema') {
+    if (url.pathname === '/api/mcp/v1/principal') {
       if (!publicAccessAllowed) {
         return json({
           error: { code: 'token_revoked', message: 'Access token is no longer active.' },
         }, { status: 401 });
       }
+      return json({ principal: principalAttestation });
+    }
+
+    if (url.pathname === '/api/mcp/v1/schema') {
       return json({
         version: 'v1',
-        principal: schemaPrincipal,
+        principal: defaultPrincipalAttestation,
         scopes: ['firewalls:read', 'metrics:read', 'findings:read'],
         time_ranges: ['5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '3d', '1w', '30d'],
         suspicious_users: {
@@ -1268,7 +1290,7 @@ test('pilot responses must attest the authenticated tenant scope', async () => {
 });
 
 test('verified global admins can discover a mixed firewall list and select conversation topics', async () => {
-  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  principalAttestation = { ...(principalAttestation as object), is_admin: true };
   additionalListItems = ['pilot-one', 'pilot-two'].map((tenant) => ({
     firewall_id: `managed:${tenant}`,
     data_scope: scopeAttestation(`managed:${tenant}`, tenant, 'pilot_tenant'),
@@ -1289,20 +1311,20 @@ test('verified global admins can discover a mixed firewall list and select conve
 });
 
 test('admin authority is refreshed for each evidence request', async () => {
-  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  principalAttestation = { ...(principalAttestation as object), is_admin: true };
   listScopeKind = 'pilot_tenant';
   listScopeTenant = 'another-pilot';
   const { client } = await connectedClient();
   const allowed = await client.callTool({ name: 'list_firewalls', arguments: {} });
   assert.equal(allowed.isError, undefined);
-  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: false };
+  principalAttestation = { ...(principalAttestation as object), is_admin: false };
   const denied = await client.callTool({ name: 'list_firewalls', arguments: {} });
   assert.equal(denied.isError, true);
   assert.equal((denied.structuredContent as { error: { code: string } }).error.code, 'upstream_scope_mismatch');
 });
 
 test('global admins still require a data scope attestation on every discovered firewall', async () => {
-  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  principalAttestation = { ...(principalAttestation as object), is_admin: true };
   additionalListItems = [{ firewall_id: 'managed:pilot-one' }];
   const { client } = await connectedClient();
   const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
@@ -1324,35 +1346,38 @@ test('preflight recovers tenant identity for existing credentials that omitted i
 
 test('preflight rejects a principal for another subject, organization, or tenant before reading evidence', async () => {
   const { client } = await connectedClient();
-  const principal = schemaPrincipal as Record<string, unknown>;
+  const principal = principalAttestation as Record<string, unknown>;
   for (const mismatch of [
     { subject: 'auth0|other' }, { organization_id: 'org_other' }, { tenant: 'other' },
   ]) {
-    schemaPrincipal = { ...principal, ...mismatch, is_admin: true };
+    principalAttestation = { ...principal, ...mismatch, is_admin: true };
     upstreamCalls = [];
     await assert.rejects(() => client.callTool({ name: 'list_firewalls', arguments: {} }), /upstream_scope_mismatch/);
     assert.equal(upstreamCalls.some((call) => new URL(call.url).pathname === '/api/mcp/v1/firewalls'), false);
   }
 });
 
-test('missing or malformed preflight authority cannot grant cross-tenant pilot access', async () => {
+test('missing or malformed preflight authority fails closed before reading evidence', async () => {
   const { client } = await connectedClient();
-  listScopeKind = 'pilot_tenant';
-  const principal = schemaPrincipal as Record<string, unknown>;
-  schemaPrincipal = undefined;
-  const sameTenant = await client.callTool({ name: 'list_firewalls', arguments: {} });
-  assert.equal(sameTenant.isError, undefined);
-  listScopeTenant = 'another-pilot';
-  const legacy = await client.callTool({
-    name: 'list_firewalls', arguments: { is_admin: true, tenant: 'another-pilot' },
-  });
-  assert.equal(legacy.isError, true);
-  assert.equal((legacy.structuredContent as { error: { code: string } }).error.code, 'upstream_scope_mismatch');
+  const principal = principalAttestation as Record<string, unknown>;
+  principalAttestation = undefined;
+  upstreamCalls = [];
+  await assert.rejects(
+    () => client.callTool({ name: 'list_firewalls', arguments: {} }),
+    /upstream_scope_unverified/,
+  );
+  assert.deepEqual(
+    upstreamCalls.map((call) => new URL(call.url).pathname),
+    ['/api/mcp/v1/principal'],
+  );
   for (const malformed of [null, { ...principal, is_admin: 'true' }, { ...principal, subject: '' }]) {
-    schemaPrincipal = malformed;
+    principalAttestation = malformed;
     upstreamCalls = [];
     await assert.rejects(() => client.callTool({ name: 'list_firewalls', arguments: {} }), /upstream_scope_unverified/);
-    assert.equal(upstreamCalls.some((call) => new URL(call.url).pathname === '/api/mcp/v1/firewalls'), false);
+    assert.deepEqual(
+      upstreamCalls.map((call) => new URL(call.url).pathname),
+      ['/api/mcp/v1/principal'],
+    );
   }
 });
 
@@ -1433,6 +1458,200 @@ test('get_schema exposes suspicious-users contract through MCP', async () => {
   const lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
   assert.equal(lastUrl.pathname, '/api/mcp/v1/schema');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('scope-neutral principal preflight preserves narrow signed upstream credentials', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  let principalPayload: unknown = { principal: { ...defaultPrincipalAttestation } };
+  const localCalls: Array<{ path: string; scopes: string[] }> = [];
+  const upstream = createServer(async (req, res) => {
+    const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    const authorization = req.headers.authorization ?? '';
+    const bearerPrefix = 'Bearer ';
+    const bearer = authorization.slice(0, bearerPrefix.length).toLowerCase()
+      === bearerPrefix.toLowerCase()
+      ? authorization.slice(bearerPrefix.length).trim()
+      : '';
+    if (!bearer) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'token_missing', message: 'Missing bearer token.' } }));
+      return;
+    }
+
+    let scopes: string[];
+    try {
+      const verified = await jwtVerify(bearer, upstreamSigningKeys.publicKey, {
+        issuer: 'https://tenant.example.auth0.com/',
+        audience: 'https://silmaril.security/firewall-ui/mcp-test',
+      });
+      scopes = typeof verified.payload.scope === 'string'
+        ? verified.payload.scope.split(/\s+/).filter(Boolean)
+        : [];
+    } catch {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'token_invalid', message: 'Invalid bearer token.' } }));
+      return;
+    }
+    localCalls.push({ path, scopes });
+
+    const respond = (status: number, payload: unknown) => {
+      res.writeHead(status, {
+        'cache-control': 'no-store',
+        'content-type': 'application/json',
+      });
+      res.end(JSON.stringify(payload));
+    };
+    if (path === '/api/mcp/v1/principal') {
+      respond(200, principalPayload);
+      return;
+    }
+
+    const requiredScope = path === '/api/mcp/v1/schema'
+      ? 'firewalls:read'
+      : path.endsWith('/metrics')
+        ? 'metrics:read'
+        : path.endsWith('/investigation-packet')
+          ? 'findings:read'
+          : null;
+    if (!requiredScope || !scopes.includes(requiredScope)) {
+      respond(403, { error: { code: 'scope_missing', message: `Required scope: ${requiredScope ?? 'unknown'}.` } });
+      return;
+    }
+    if (path.endsWith('/metrics')) {
+      respond(200, {
+        firewall: {
+          firewall_id: 'synthetic-firewall',
+          data_scope: scopeAttestation('synthetic-firewall'),
+          scope: 'global',
+          region: null,
+        },
+        coverage: { complete: true, available_regions: ['local'], unavailable_regions: [] },
+      });
+      return;
+    }
+    if (path.endsWith('/investigation-packet')) {
+      respond(200, {
+        firewall: {
+          firewall_id: 'synthetic-firewall',
+          data_scope: scopeAttestation('synthetic-firewall'),
+        },
+        finding: { evidence_id: 'synthetic-firewall:synthetic-finding' },
+        nearby_metrics: scopes.includes('metrics:read') ? { invocations: 1 } : null,
+      });
+      return;
+    }
+    respond(200, { version: 'v1' });
+  });
+
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.FIREWALL_UI_BASE_URL = `http://127.0.0.1:${address.port}`;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = requestFrom(input, init);
+    return new URL(request.url).hostname === 'mcp.test'
+      ? handleMcpRequest(request)
+      : originalFetch(request);
+  }) as typeof fetch;
+
+  const transports: StreamableHTTPClientTransport[] = [];
+  async function narrowClient(scopes: string[]) {
+    const downstream = await upstreamAccessToken({ scope: scopes.join(' ') });
+    const accessToken = mcpAccessTokenForDownstream(
+      scopes,
+      downstream,
+      'public',
+      `narrow-${scopes.join('-')}`,
+    );
+    const client = new Client({ name: 'narrow-scope-test-client', version: '0.1.0' });
+    const transport = new StreamableHTTPClientTransport(new URL('https://mcp.test/mcp'), {
+      requestInit: { headers: { authorization: `Bearer ${accessToken}` } },
+      fetch: globalThis.fetch,
+    });
+    transports.push(transport);
+    await client.connect(transport);
+    return { accessToken, client };
+  }
+
+  try {
+    const metrics = await narrowClient(['metrics:read']);
+    const metricsResult = await metrics.client.callTool({ name: 'get_metrics', arguments: {} });
+    assert.equal(metricsResult.isError, undefined);
+    assert.equal(
+      (metricsResult.structuredContent as { firewall: { firewall_id: string } }).firewall.firewall_id,
+      'synthetic-firewall',
+    );
+
+    const findings = await narrowClient(['findings:read']);
+    const packet = await findings.client.callTool({
+      name: 'get_investigation_packet',
+      arguments: { finding_id: 'synthetic-finding' },
+    });
+    assert.equal(packet.isError, undefined);
+    assert.equal(
+      (packet.structuredContent as { nearby_metrics: unknown }).nearby_metrics,
+      null,
+    );
+
+    const beforeSchema = localCalls.length;
+    const schema = await handleMcpRequest(new Request('https://mcp.test/mcp', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${metrics.accessToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'get_schema', arguments: {} },
+      }),
+    }));
+    assert.equal(schema.status, 403);
+    assert.equal((await schema.json()).error.code, 'insufficient_scope');
+    assert.equal(localCalls.length, beforeSchema);
+
+    const assertPreflightDenied = async (payload: unknown, code: string) => {
+      principalPayload = payload;
+      const before = localCalls.length;
+      await assert.rejects(
+        () => metrics.client.callTool({ name: 'get_metrics', arguments: {} }),
+        new RegExp(code),
+      );
+      assert.deepEqual(
+        localCalls.slice(before).map((call) => call.path),
+        ['/api/mcp/v1/principal'],
+      );
+    };
+    await assertPreflightDenied({}, 'upstream_scope_unverified');
+    await assertPreflightDenied({ principal: null }, 'upstream_scope_unverified');
+    await assertPreflightDenied({
+      principal: { ...defaultPrincipalAttestation, is_admin: 'true' },
+    }, 'upstream_scope_unverified');
+    for (const mismatch of [
+      { subject: 'auth0|other' },
+      { organization_id: 'org_other' },
+      { tenant: 'other' },
+    ]) {
+      await assertPreflightDenied({
+        principal: { ...defaultPrincipalAttestation, ...mismatch },
+      }, 'upstream_scope_mismatch');
+    }
+
+    assert.ok(localCalls.some((call) =>
+      call.path.endsWith('/metrics')
+      && call.scopes.join(' ') === 'metrics:read'));
+    assert.ok(localCalls.some((call) =>
+      call.path.endsWith('/investigation-packet')
+      && call.scopes.join(' ') === 'findings:read'));
+    assert.equal(localCalls.some((call) =>
+      call.path === '/api/mcp/v1/schema'), false);
+  } finally {
+    await Promise.all(transports.map((transport) => transport.close()));
+    await new Promise<void>((resolve, reject) => upstream.close((error) => (
+      error ? reject(error) : resolve()
+    )));
+  }
 });
 
 test('rejects invalid Origin before MCP handling', async () => {
@@ -1518,7 +1737,7 @@ test('rejects a revoked downstream credential at the HTTP boundary before MCP ha
   assert.match(response.headers.get('www-authenticate') ?? '', /error="invalid_token"/);
   assert.deepEqual(
     upstreamCalls.map((call) => new URL(call.url).pathname),
-    ['/api/mcp/v1/schema'],
+    ['/api/mcp/v1/principal'],
   );
 });
 
@@ -2989,7 +3208,7 @@ test('group_findings rejects a mismatched constituent scope before aggregation',
 });
 
 test('global admins still cannot aggregate inconsistent pilot scopes', async () => {
-  schemaPrincipal = { ...(schemaPrincipal as object), is_admin: true };
+  principalAttestation = { ...(principalAttestation as object), is_admin: true };
   totalsScopeTenantByTriage = {
     true_positive: 'pilot-one', false_positive: 'pilot-two', untriaged: 'pilot-one',
   };
