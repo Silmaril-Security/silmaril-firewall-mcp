@@ -4,7 +4,7 @@ Silmaril Firewall monitors AI application traffic at runtime and records securit
 
 The Silmaril Firewall MCP server lets an agent read that evidence from your authorized tenant. It is read-only, tenant-scoped, and backed by Silmaril's `firewall-ui` API. The MCP server does not connect directly to your AWS account, database, traces, or runtime infrastructure.
 
-For managed pilots, the boundary is the authenticated Auth0 organization and tenant slug plus every currently active API key bound to that pair. Findings, metrics, rollups, conversation search, and conversation hydration all use that server-derived boundary. Callers cannot supply or widen it. Conversation vectors remain in the shared deployment index and are filtered by tenant scope and active API-key identity; no pilot-specific index is required. Firewall responses include a non-sensitive `data_scope` attestation, which this proxy always requires. A different pilot tenant is rejected unless firewall-ui has verified global administrator authority for that request. Authorized administrators can discover and select pilot firewalls through the same evidence tools; each selected pilot's data remains isolated by firewall-ui.
+For managed pilots, the boundary is the authenticated Auth0 organization and tenant slug plus every currently active API key bound to that pair. Findings, metrics, rollups, conversation search, conversation topics, and conversation hydration all use that server-derived boundary. Callers cannot supply or widen it. Conversation vectors remain in the shared deployment index and are filtered by tenant scope and active API-key identity; no pilot-specific index is required. Tenant-scoped evidence responses include a non-sensitive `data_scope` attestation, which this proxy requires. `get_schema` is not attested. A different pilot tenant is rejected unless firewall-ui has verified global administrator authority for that request. Authorized administrators can discover and select pilot firewalls through the same evidence tools; each selected pilot's data remains isolated by firewall-ui.
 
 Use it when you want an agent to answer questions like:
 
@@ -144,9 +144,7 @@ Count false positives for your-firewall-id over the last 7 days.
 - `get_finding_trace` retrieves trace evidence when available and your account has trace access.
 
 Start with aggregate and search tools. Use `get_conversation`, `get_finding`, or `get_finding_trace` only when compact evidence is not enough.
-Those sensitive tools require explicit detail scopes, a reason, and a
-durable audit sink. Their tool metadata marks them as restricted rather than
-safe for automatic read-only approval.
+`get_finding` requires `findings:detail` and `payload:read`. `get_finding_trace` and `get_conversation` require `trace:read`. All three require a reason of 8 to 512 characters and a durable audit sink, and their tool metadata marks them as restricted rather than safe for automatic read-only approval. `search_conversations`, `list_conversation_topics`, and `get_conversation_topic` require `conversations:read` and are ordinary read-only tools.
 
 ## Evidence Safety
 
@@ -156,24 +154,26 @@ Finding payloads, conversation captures, and trace text can contain attacker-con
 
 Most finding tools accept a bounded time window:
 
-- `range`: one of the supported presets, such as `1d`, `1w`, or `30d`.
+- `range`: `5m`, `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `3d`, `1w`, or `30d`.
 - `startTime` and `endTime`: absolute ISO timestamps, supplied together.
 
-Every firewall-scoped tool accepts optional `firewall_id` and `region`. Omit both to use the authenticated organization’s default logical firewall at Global scope. Supply `region` for regional health or post-attribution findings. Physical deployment IDs remain accepted, but responses use canonical logical firewall IDs and explicit region metadata. Organizations with multiple logical firewalls and no configured default receive `firewall_selection_required`.
+Firewall selection tools accept optional `firewall_id` and `region`: `get_firewall`, `get_metrics`, `list_findings`, `list_suspicious_users`, `get_finding_totals`, `group_findings`, `get_investigation_packet`, `get_finding`, and `get_finding_trace`. Omit both to use the authenticated organization’s default logical firewall at Global scope. Supply `region` for regional health or post-attribution findings. Physical deployment IDs remain accepted, but responses use canonical logical firewall IDs and explicit region metadata. Organizations with multiple logical firewalls and no configured default receive `firewall_selection_required`. Conversation search, topic, and hydration tools accept optional `firewall_id` only; they do not accept `region`. `list_firewalls` and `get_schema` take neither.
 
 Global finding views include historical rows that predate trusted source-endpoint attribution. Regional finding views begin at the attribution rollout boundary; the response coverage metadata discloses this boundary, and historical regions are never inferred or backfilled.
 
-`list_findings`, `get_finding_totals`, and `group_findings` accept `metadata` as an array of `{ "key": "...", "value": "..." }` conditions. Conditions are AND-combined and match firewall-ui behavior: `key` is a metadata JSON dot path with at most six segments, and `value` is matched case-insensitively by contains.
+`list_findings`, `get_finding_totals`, `group_findings`, and `list_suspicious_users` accept `metadata` as an array of `{ "key": "...", "value": "..." }` conditions. Conditions are AND-combined and match firewall-ui behavior: `key` is a metadata JSON dot path with at most six segments, and `value` is matched case-insensitively by contains.
 
-Those three tools also accept one `owner` value. Supply an owner email, API key name, or configured API key tag. Matching is exact and case-insensitive. A tag resolves to its owner and includes findings from every retained key assigned to that owner. Unattributed findings are excluded instead of guessed; self-hosted Cascade history is available from the runtime attribution release forward.
+`list_findings`, `get_finding_totals`, and `group_findings` also accept one `owner` value. Supply an owner email, API key name, or configured API key tag. Matching is exact and case-insensitive. A tag resolves to its owner and includes findings from every retained key assigned to that owner. Unattributed findings are excluded instead of guessed; self-hosted Cascade history is available from the runtime attribution release forward.
 
 `list_suspicious_users` accepts the same bounded time window fields plus optional `categories`, `minFindings`, `limit`, `candidateLimit`, and `lookbackCandidateLimit`. Use `categories: ["model_distillation"]` or `categories: ["nsfw_content_abuse"]` when separating distillation and NSFW abuse campaigns. Suspicious-user score fields are explicit 0-100 percentages, and bot-farming signals use `bot_farming.*_percent` names. Missing future signals such as JA4 are returned as unavailable diagnostics by firewall-ui, not treated as zero-scored evidence.
+
+`search_conversations` uses a different window: `range` of `1d`, `7d`, `30d`, or `90d`, optional absolute `start_time` and `end_time`, and `page_size` up to 100. `list_conversation_topics` uses those presets plus `status` (`active`, `emerging`, or `all`), `sort` (`volume`, `growth`, or `newest`), and `page_size` up to 50. `get_conversation_topic` adds `membership` (`primary`, `secondary`, or `all`) and `page_size` up to 100. `get_conversation` takes `handle`, `reason`, and optional `cursor`, and has no time window.
 
 ## Local Development
 
 Customer setup is the hosted URL above. Server setup and deployment configuration for Silmaril operators live in [docs/developer-quickstart.md](docs/developer-quickstart.md).
 
 Silmaril global administrators also have a separate `/admin/mcp` resource with
-only bounded adoption-summary and recent-activity tools. It is authorized by
+only `get_mcp_adoption_summary` and `list_mcp_activity`. It is authorized by
 `firewall-ui` before the admin MCP server is constructed and is not part of the
 customer evidence tool surface.

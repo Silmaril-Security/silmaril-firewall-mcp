@@ -10,7 +10,7 @@ Key terms:
 
 - Firewall: a logical Silmaril runtime protection resource that can include one or more regional deployments.
 - Firewall ID: the canonical logical `firewall_id` returned by MCP. It is optional when your organization has a configured default.
-- Region: an optional regional member selection for health, capacity, latency, errors, traffic, and post-attribution findings.
+- Region: an optional regional member selection for health, capacity, latency, errors, traffic, and post-attribution findings. Conversation search, topics, and hydration do not accept `region`.
 - Finding: one security event recorded by the Firewall.
 - Risk class: the base security outcome, such as information disclosure, secret exposure, control abuse, system compromise, or service disruption.
 - Triage: review status for a finding, such as true positive, false positive, triaged, or untriaged.
@@ -37,7 +37,7 @@ Your tenant access comes from the Silmaril organization you log in with, not fro
 
 When a client registers without requesting scopes, the MCP server grants the aggregate set: `firewalls:read`, `metrics:read`, and `findings:read`. ClickUp baseline setup relies on that default. Do not open Advanced to type scopes.
 
-That set covers the aggregate and compact-evidence workflows below. Full finding payloads, traces, and semantic conversation discovery need extra scopes, and your Silmaril account must already be authorized for them. Those extra scopes are not part of this baseline connection.
+That set covers the aggregate and compact-evidence workflows below. Full finding payloads require `findings:detail` and `payload:read`. Traces and `get_conversation` require `trace:read`. Semantic conversation search and topic tools require `conversations:read`. Your Silmaril account must already be authorized for those scopes. They are not part of this baseline connection. `get_finding`, `get_finding_trace`, and `get_conversation` also require a reason of 8 to 512 characters and a durable audit sink.
 
 ## Recommended Tool Path
 
@@ -52,8 +52,11 @@ Then start broad and narrow:
 5. Use `list_findings` for compact finding previews.
 6. Use `list_suspicious_users` for user-level abuse review.
 7. Use `search_conversations` for natural-language discovery when the firewall exposes that capability.
-8. Use `get_investigation_packet` before opening full finding payloads or traces.
-9. Use `get_conversation`, `get_finding`, or `get_finding_trace` only when compact evidence is insufficient and your account has detail access.
+8. Use `list_conversation_topics` and `get_conversation_topic` for topic trends and membership. They need `conversations:read` and do not open a full conversation.
+9. Use `get_investigation_packet` before opening full finding payloads or traces.
+10. Use `get_conversation`, `get_finding`, or `get_finding_trace` only when compact evidence is insufficient and your account has the scopes above.
+
+Conversation search and topics use `range` values `1d`, `7d`, `30d`, and `90d`. Search absolute bounds are `start_time` and `end_time`, not the finding tools' `startTime` and `endTime`. Topic lists cap `page_size` at 50.
 
 Ask the agent to cite Firewall IDs, finding IDs, evidence IDs, request IDs, and trace diagnostics. That makes the answer reviewable without copying sensitive payload text into the conversation.
 
@@ -135,7 +138,7 @@ Filter suspicious users for your-firewall-id to NSFW content abuse only.
 
 ### Metadata Filtering
 
-Use metadata filters when you need to narrow findings to a stage, workspace, runtime identity, request family, or other captured metadata. Metadata conditions are AND-combined and use contains matching.
+Use metadata filters when you need to narrow findings to a stage, workspace, runtime identity, request family, or other captured metadata. Metadata conditions are AND-combined and use contains matching. `list_suspicious_users` accepts the same metadata array. It does not accept the `owner` filter.
 
 Prompt:
 
@@ -219,7 +222,9 @@ If a tool reports missing scope, your account can connect but does not have the 
 
 If findings are empty, widen the time window, check whether you are looking at the correct deployment, and ask for schema/defaults to confirm supported ranges.
 
-If a response is too large, lower `pageSize`, reduce the time window, add filters, or use grouping before listing individual findings.
+If a response is too large, lower `pageSize` on finding lists (maximum 100) or `page_size` on conversation search and topic detail (maximum 100; topic lists maximum 50), reduce the time window, add filters, or use grouping before listing individual findings.
+
+If a sensitive tool rejects the call before returning evidence, the reason must be 8 to 512 characters and the audit sink must accept the event.
 
 If you are not sure whether full payload access is needed, ask for an investigation packet first and have the agent explain what evidence is still missing.
 
