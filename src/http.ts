@@ -207,14 +207,14 @@ async function assertPublicAccess(
   credential: McpCredential,
   config: ServerConfig,
   signal?: AbortSignal,
-): Promise<VerifiedPrincipal | undefined> {
+): Promise<VerifiedPrincipal> {
   const payload = await firewallGetJson<unknown>({
-    path: '/api/mcp/v1/schema',
+    path: '/api/mcp/v1/principal',
     token: credential.downstream_token,
     config,
     signal,
   });
-  const parsed = z.object({ principal: PrincipalSchema.optional() }).safeParse(payload);
+  const parsed = z.object({ principal: PrincipalSchema }).safeParse(payload);
   if (!parsed.success) {
     throw new FirewallApiError(
       502,
@@ -223,9 +223,6 @@ async function assertPublicAccess(
     );
   }
   const principal = parsed.data.principal;
-  // Older firewall-ui versions do not attest a principal. Preserve tenant-only
-  // checks in that case; never infer global admin authority from client input.
-  if (!principal) return undefined;
   if (
     principal.subject !== credential.subject
     || (credential.organization !== undefined && principal.organization_id !== credential.organization)

@@ -16,7 +16,7 @@
 - `firewall-ui` rejects wrong issuer, wrong audience, expiry, missing org, missing tenant, missing admin claim, and missing scopes.
 - Cross-tenant resource probes are re-scoped through `firewall-ui` deployment lookup and return deterministic `404`.
 - Managed-pilot authority is derived from the verified Auth0 organization and tenant. Every currently active runtime key bound to that pair is included; caller-supplied tenant or key selectors cannot widen the boundary.
-- Tenant-scoped evidence responses carry a non-sensitive `data_scope` attestation. The MCP proxy fails closed when `kind`, `firewall_id`, or `tenant` is missing. A `pilot_tenant` attestation for a different tenant fails with `502` `upstream_scope_mismatch` unless the schema principal has `is_admin: true`. `get_schema` is not attested.
+- Tenant-scoped evidence responses carry a non-sensitive `data_scope` attestation. The MCP proxy fails closed when `kind`, `firewall_id`, or `tenant` is missing. A `pilot_tenant` attestation for a different tenant fails with `502` `upstream_scope_mismatch` unless the scope-neutral `/api/mcp/v1/principal` preflight attests `is_admin: true`. Missing or malformed principal attestations fail closed, and `get_schema` remains separately gated by `firewalls:read`.
 - `/admin/mcp` has separate protected-resource metadata and calls `GET /api/mcp/v1/admin/access` before constructing or exposing `get_mcp_adoption_summary` and `list_mcp_activity`. Calling those tools also requires `firewalls:read`.
 
 ## Tool Surface
