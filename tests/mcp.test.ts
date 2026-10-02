@@ -1466,7 +1466,12 @@ test('scope-neutral principal preflight preserves narrow signed upstream credent
   const localCalls: Array<{ path: string; scopes: string[] }> = [];
   const upstream = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
-    const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization ?? '')?.[1];
+    const authorization = req.headers.authorization ?? '';
+    const bearerPrefix = 'Bearer ';
+    const bearer = authorization.slice(0, bearerPrefix.length).toLowerCase()
+      === bearerPrefix.toLowerCase()
+      ? authorization.slice(bearerPrefix.length).trim()
+      : '';
     if (!bearer) {
       res.writeHead(401, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: { code: 'token_missing', message: 'Missing bearer token.' } }));
