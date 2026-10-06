@@ -37,7 +37,7 @@ Your tenant access comes from the Silmaril organization you log in with, not fro
 
 When a client registers without requesting scopes, the MCP server grants the aggregate set: `firewalls:read`, `metrics:read`, and `findings:read`. ClickUp baseline setup relies on that default. Do not open Advanced to type scopes.
 
-That set covers the aggregate and compact-evidence workflows below. Full finding payloads require `findings:detail` and `payload:read`. Traces and `get_conversation` require `trace:read`. Semantic conversation search and topic tools require `conversations:read`. Your Silmaril account must already be authorized for those scopes. They are not part of this baseline connection. `get_finding`, `get_finding_trace`, and `get_conversation` also require a reason of 8 to 512 characters and a durable audit sink.
+That set covers the aggregate and compact-evidence workflows below. Full finding payloads require `findings:detail` and `payload:read`. Traces and `get_conversation` require `trace:read`. Semantic conversation search and topic tools require `conversations:read`. Your Silmaril account must already be authorized for those scopes. They are not part of this baseline connection. `get_finding`, `get_finding_trace`, and `get_conversation` also require a reason of 8 to 500 characters and a durable audit sink. Leading and trailing whitespace is trimmed before reason validation.
 
 ## Recommended Tool Path
 
@@ -224,7 +224,7 @@ If findings are empty, widen the time window, check whether you are looking at t
 
 If a response is too large, lower `pageSize` on finding lists (maximum 100) or `page_size` on conversation search and topic detail (maximum 100; topic lists maximum 50), reduce the time window, add filters, or use grouping before listing individual findings.
 
-If a sensitive tool rejects the call before returning evidence, the reason must be 8 to 512 characters and the audit sink must accept the event.
+If a sensitive tool rejects the call before returning evidence, the reason must be 8 to 500 characters after leading and trailing whitespace is trimmed, and the audit sink must accept the event.
 
 If you are not sure whether full payload access is needed, ask for an investigation packet first and have the agent explain what evidence is still missing.
 

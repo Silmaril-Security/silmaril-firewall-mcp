@@ -1186,6 +1186,70 @@ test('conversation tools proxy POST bodies and continue audited hydration with s
   );
 });
 
+test('sensitive reason validation matches the upstream contract at the MCP tool boundary', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  const { client } = await connectedClient();
+  const tools = await client.listTools();
+
+  for (const name of ['get_conversation', 'get_finding', 'get_finding_trace']) {
+    const schema = tools.tools.find((tool) => tool.name === name)?.inputSchema as {
+      properties?: Record<string, { minLength?: number; maxLength?: number }>;
+    };
+    assert.equal(schema.properties?.reason?.minLength, 8, `${name} reason minimum`);
+    assert.equal(schema.properties?.reason?.maxLength, 500, `${name} reason maximum`);
+  }
+
+  for (const reason of [
+    '        ',
+    ' 1234567 ',
+    'x'.repeat(501),
+    'x'.repeat(512),
+  ]) {
+    const result = await client.callTool({
+      name: 'get_conversation',
+      arguments: {
+        firewall_id: 'clickup-cascade-alpha',
+        handle: 'opaque-conversation-handle',
+        reason,
+      },
+    });
+    assert.equal(result.isError, true);
+  }
+  assert.equal(
+    upstreamCalls.some((call) =>
+      new URL(call.url).pathname.includes('/conversations/opaque-conversation-handle')),
+    false,
+  );
+
+  const validReasons = [
+    '12345678',
+    'x'.repeat(500),
+    '  padded valid reason  ',
+  ];
+  for (const reason of validReasons) {
+    const result = await client.callTool({
+      name: 'get_conversation',
+      arguments: {
+        firewall_id: 'clickup-cascade-alpha',
+        handle: 'opaque-conversation-handle',
+        reason,
+      },
+    });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+  }
+
+  const hydrationBodies = upstreamCalls
+    .filter((call) =>
+      new URL(call.url).pathname.includes('/conversations/opaque-conversation-handle'))
+    .map((call) => JSON.parse(call.body ?? '{}'));
+  assert.deepEqual(hydrationBodies, [
+    { reason: '12345678' },
+    { reason: 'x'.repeat(500) },
+    { reason: 'padded valid reason' },
+  ]);
+});
+
 test('conversation topic tools use read-only tenant-attested GET pagination', async () => {
   const { client } = await connectedClient();
   const listed = await client.callTool({

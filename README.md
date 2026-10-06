@@ -144,7 +144,7 @@ Count false positives for your-firewall-id over the last 7 days.
 - `get_finding_trace` retrieves trace evidence when available and your account has trace access.
 
 Start with aggregate and search tools. Use `get_conversation`, `get_finding`, or `get_finding_trace` only when compact evidence is not enough.
-`get_finding` requires `findings:detail` and `payload:read`. `get_finding_trace` and `get_conversation` require `trace:read`. All three require a reason of 8 to 512 characters and a durable audit sink, and their tool metadata marks them as restricted rather than safe for automatic read-only approval. `search_conversations`, `list_conversation_topics`, and `get_conversation_topic` require `conversations:read` and are ordinary read-only tools.
+`get_finding` requires `findings:detail` and `payload:read`. `get_finding_trace` and `get_conversation` require `trace:read`. All three require a reason of 8 to 500 characters; leading and trailing whitespace is trimmed before validation. They also require a durable audit sink, and their tool metadata marks them as restricted rather than safe for automatic read-only approval. `search_conversations`, `list_conversation_topics`, and `get_conversation_topic` require `conversations:read` and are ordinary read-only tools.
 
 ## Evidence Safety
 

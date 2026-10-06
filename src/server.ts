@@ -26,7 +26,7 @@ const RegionSchema = z.string().regex(/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/).max(32);
 const OwnerSelectorSchema = z.string().trim().min(1).max(320).describe(
   'One owner email, API key name, or configured API key tag. Matching is case-insensitive and exact; a tag selects every key assigned to its owner.',
 );
-const ReasonSchema = z.string().min(8).max(512);
+const ReasonSchema = z.string().trim().min(8).max(500);
 const ConversationRangeSchema = z.enum(['1d', '7d', '30d', '90d']);
 const ConversationTopicStatusSchema = z.enum(['active', 'emerging', 'all']);
 const ConversationTopicSortSchema = z.enum(['volume', 'growth', 'newest']);
