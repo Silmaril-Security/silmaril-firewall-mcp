@@ -27,7 +27,7 @@
 - `list_suspicious_users` requires only aggregate findings access upstream and returns minimized evidence handles, derived abuse categories, bot-farming scores, and missing-metadata diagnostics.
 - Bot-farming correlation is a prioritization boost only; suspicious-user inclusion must come from true-positive abuse evidence.
 - Suspicious-user score fields use explicit 0-100 percentage names such as `suspicious_score_percent`, `bot_farming.score_percent`, and `bot_farming.signals.*.score_percent`.
-- `get_finding` requires `findings:detail` and `payload:read`. `get_finding_trace` and `get_conversation` require `trace:read`. All three require a `reason` of 8 to 512 characters.
+- `get_finding` requires `findings:detail` and `payload:read`. `get_finding_trace` and `get_conversation` require `trace:read`. All three require a `reason` of 8 to 500 characters after leading and trailing whitespace is trimmed.
 - Those three tools are marked restricted, are excluded from read-only auto-approval hints, and require the scopes above. Conversation search and topic tools require `conversations:read` and stay read-only.
 - `list_findings` `pageSize`, conversation search `page_size`, and topic-detail `page_size` are capped at 100. Topic-list `page_size` is capped at 50. Finding `range` is one of `5m`, `15m`, `30m`, `1h`, `3h`, `6h`, `12h`, `1d`, `3d`, `1w`, or `30d`. Conversation search and topics use `1d`, `7d`, `30d`, or `90d`.
 - JSON-RPC batches, non-JSON requests, and request bodies over `MCP_MAX_REQUEST_BYTES` are rejected before MCP processing.
