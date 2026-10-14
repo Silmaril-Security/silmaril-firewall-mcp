@@ -424,7 +424,7 @@ async function callConversationHydration(
         requestId: extra.requestId,
         outcome: 'error',
         actor: actorContext(extra.authInfo),
-      }, config, extra.signal);
+      }, config, extra.signal, bearer);
       return mcpErrorResult(err);
     }
     await auditDetailAccess({
@@ -435,7 +435,7 @@ async function callConversationHydration(
       requestId: extra.requestId,
       outcome: 'success',
       actor: actorContext(extra.authInfo),
-    }, config, extra.signal);
+    }, config, extra.signal, bearer);
     outcome = 'success';
     return result;
   } catch (err) {
@@ -567,7 +567,7 @@ async function callSensitiveFirewall<T>(
         requestId: extra.requestId,
         outcome: 'error',
         actor: actorContext(extra.authInfo),
-      }, config, extra.signal);
+      }, config, extra.signal, bearer);
       return mcpErrorResult(err);
     }
     await auditDetailAccess({
@@ -578,7 +578,7 @@ async function callSensitiveFirewall<T>(
       requestId: extra.requestId,
       outcome: 'success',
       actor: actorContext(extra.authInfo),
-    }, config, extra.signal);
+    }, config, extra.signal, bearer);
     outcome = 'success';
     return result;
   } catch (err) {
