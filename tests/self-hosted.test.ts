@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { auditDetailAccess } from '../src/audit';
 import { readConfig } from '../src/config';
+import { GET as ready } from '../app/readyz/route';
+import { resetFirewallMcpPublicConfigCacheForTests } from '../src/firewall-ui-config';
 import { GET as live } from '../app/healthz/route';
 
 const event = {
@@ -27,4 +29,26 @@ test('audit user credentials only reach the configured evidence authority', asyn
 
 test('liveness does not depend on external identity or evidence services', async () => {
   assert.equal((await live()).status, 200);
+});
+
+
+test('readiness rejects absent OAuth clients and accepts the OAuth byte-length contract', async (t) => {
+  const original = { ...process.env };
+  t.after(() => { process.env = original; resetFirewallMcpPublicConfigCacheForTests(); });
+  process.env.FIREWALL_UI_BASE_URL = 'https://dashboard.example.test';
+  process.env.MCP_PUBLIC_BASE_URL = 'https://dashboard.example.test';
+  process.env.MCP_AUDIT_URL = 'https://dashboard.example.test/api/mcp/v1/audit';
+  process.env.MCP_OAUTH_STATE_SECRET = 'é'.repeat(16);
+  let client: string | null = null;
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ version: 'v1', enabled: true,
+    issuer: 'https://auth.example.test/', authorization_servers: ['https://auth.example.test/'],
+    audience: 'https://dashboard.example.test/mcp', scopes: ['firewalls:read'],
+    oauth: { client_id: client, client_id_source: 'installation' } }));
+  resetFirewallMcpPublicConfigCacheForTests();
+  assert.equal((await ready()).status, 503);
+  client = 'public-installation-client';
+  resetFirewallMcpPublicConfigCacheForTests();
+  assert.equal((await ready()).status, 200);
+  process.env.MCP_OAUTH_STATE_SECRET = 'short';
+  assert.equal((await ready()).status, 503);
 });

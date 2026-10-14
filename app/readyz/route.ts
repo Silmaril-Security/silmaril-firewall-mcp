@@ -7,10 +7,11 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   try {
     const config = readConfig();
-    if (!config.publicBaseUrl || !config.oauthStateSecret || config.oauthStateSecret.length < 32 || !config.auditUrl) {
+    if (!config.publicBaseUrl || !config.oauthStateSecret || Buffer.byteLength(config.oauthStateSecret, 'utf8') < 32 || !config.auditUrl) {
       throw new Error('Incomplete MCP configuration');
     }
-    await getFirewallMcpPublicConfig(config);
+    const upstream = await getFirewallMcpPublicConfig(config);
+    if (!upstream.oauth?.client_id) throw new Error('MCP OAuth client is not configured.');
     return Response.json({ status: 'ready' });
   } catch {
     return Response.json({ status: 'unavailable' }, { status: 503 });
