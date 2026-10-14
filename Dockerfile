@@ -17,6 +17,7 @@ LABEL com.silmaril.firewall-mcp.commit="${SILMARIL_MCP_COMMIT}" com.silmaril.fir
 COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 RUN mkdir -p /app/.next/cache && chown -R node:node /app/.next/cache
+VOLUME ["/tmp", "/app/.next/cache"]
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]
