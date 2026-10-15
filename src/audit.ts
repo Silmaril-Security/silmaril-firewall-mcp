@@ -25,14 +25,19 @@ export function assertSensitiveAuditConfigured(config: ServerConfig): void {
   }
 }
 
-export async function auditDetailAccess(event: DetailAuditEvent, config: ServerConfig, signal?: AbortSignal) {
+export async function auditDetailAccess(event: DetailAuditEvent, config: ServerConfig, signal?: AbortSignal, downstreamAccessToken?: string) {
   assertSensitiveAuditConfigured(config);
 
   let response: Response;
   try {
     response = await fetch(config.auditUrl!, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        // Send user credentials only to the configured evidence authority.
+        ...(downstreamAccessToken && new URL(config.auditUrl!).origin === new URL(config.firewallUiBaseUrl).origin
+          ? { authorization: `Bearer ${downstreamAccessToken}` } : {}),
+      },
       body: JSON.stringify({
         schema_version: 1,
         event_id: randomUUID(),

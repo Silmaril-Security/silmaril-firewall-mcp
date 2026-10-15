@@ -1,0 +1,48 @@
+name: Self-hosted MCP
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+      - run: npm ci
+      - run: npm run qa
+      - name: Build the installation image
+        run: docker build --build-arg SILMARIL_MCP_COMMIT="$GITHUB_SHA" --tag customer-mcp .
+      - name: Verify read-only non-root startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --name customer-mcp --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --publish 127.0.0.1:3000:3000 customer-mcp
+          trap 'docker logs customer-mcp; docker rm --force --volumes customer-mcp' EXIT
+          healthy=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3000/healthz; then
+              healthy=true
+              break
+            fi
+            sleep 2
+          done
+          test "$healthy" = true
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/readyz)" = 503
+          docker exec customer-mcp node -e '
+            const fs = require("node:fs");
+            if (process.getuid() !== 1000) throw new Error("Expected installation UID");
+            for (const dir of ["/tmp", "/app/.next/cache"]) {
+              const path = dir + "/writable-probe";
+              fs.writeFileSync(path, "ok"); fs.unlinkSync(path);
+            }
+            try { fs.writeFileSync("/app/root-write-probe", "unexpected"); process.exit(1); }
+            catch (error) { if (!["EROFS", "EACCES"].includes(error.code)) throw error; }
+          '
