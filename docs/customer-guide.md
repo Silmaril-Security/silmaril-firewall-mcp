@@ -58,6 +58,11 @@ Then start broad and narrow:
 
 Conversation search and topics use `range` values `1d`, `7d`, `30d`, and `90d`. Search absolute bounds are `start_time` and `end_time`, not the finding tools' `startTime` and `endTime`. Topic lists cap `page_size` at 50.
 
+A catalog can contain more than 80 topics. Follow `next_cursor` until it is null to read the complete catalog. Counts, rankings, and `as_of` refer to the accepted catalog snapshot; a stale catalog keeps its original timestamp. Reuse each returned cursor with the same query and authorized firewall. If catalog or authorization changes invalidate it, start a new listing.
+
+Topic `state` describes data readiness: `ready`, `empty`, `stale`, `building`, `partial`, or `unavailable`. `discovery.status` separately reports whether the latest refresh is running, completed, quality rejected, superseded, failed, or not started. A completed run can reject publication and keep its last-good catalog. Regional diagnostics identify mixed readiness. An empty result is only confirmed empty after a completed scan; it does not establish that a refresh is still building.
+
+
 Ask the agent to cite Firewall IDs, finding IDs, evidence IDs, request IDs, and trace diagnostics. That makes the answer reviewable without copying sensitive payload text into the conversation.
 
 ## Common Workflows

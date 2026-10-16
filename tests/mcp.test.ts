@@ -3657,3 +3657,81 @@ test('chunked upstream responses are rejected as soon as they exceed the size ca
       err.code === 'upstream_response_too_large',
   );
 });
+
+
+test('adaptive topic catalogs preserve all pages, snapshot and scoped discovery diagnostics', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  process.env.MCP_RATE_LIMIT_REQUESTS_PER_SECOND = '100';
+  const { client } = await connectedClient();
+  const baseFetch = globalThis.fetch;
+  const upstreamPages: string[] = [];
+  const diagnostics = {
+    status: 'quality_rejected', run_id: 'run-v5', publication_status: 'rejected',
+    reason: 'assignment_coverage_below_075', eligible_conversations: 618,
+    assigned_conversations: 162, last_successful_publication_at: '2026-09-09T06:02:38Z',
+  };
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const req = requestFrom(input, init);
+    const url = new URL(req.url);
+    const response = await baseFetch(input, init);
+    if (url.hostname !== 'firewall.test' || !url.pathname.endsWith('/conversation-topics')) return response;
+    const base = await response.json();
+    const offset = Number(url.searchParams.get('cursor') ?? '0');
+    upstreamPages.push(url.searchParams.get('cursor') ?? '');
+    return Response.json({ ...base, state: 'stale', as_of: '2026-09-09T06:02:38Z',
+      discovery: diagnostics,
+      regions: [{ region: 'us-west-2', state: 'stale', discovery: diagnostics },
+        { region: 'us-east-1', state: 'empty', discovery: { status: 'completed' } }],
+      topics: Array.from({ length: 50 }, (_, index) => ({ topic_id: `topic-${offset + index}` })),
+      next_cursor: offset + 50 < 200 ? String(offset + 50) : null,
+      warnings: ['The last-good catalog is stale; the latest candidate was quality rejected.'],
+    });
+  }) as typeof fetch;
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const result = await client.callTool({ name: 'list_conversation_topics', arguments: {
+      page_size: 50, status: 'all', ...(cursor ? { cursor } : {}),
+    } });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const body = result.structuredContent as { topics: Array<{ topic_id: string }>;
+      next_cursor: string | null; state: string; as_of: string; discovery: typeof diagnostics;
+      regions: Array<{ state: string }>; warnings: string[] };
+    assert.equal(body.state, 'stale');
+    assert.equal(body.as_of, '2026-09-09T06:02:38Z');
+    assert.deepEqual(body.discovery, diagnostics);
+    assert.deepEqual(body.regions.map((region) => region.state), ['stale', 'empty']);
+    assert.match(body.warnings[0], /quality rejected/);
+    ids.push(...body.topics.map((topic) => topic.topic_id));
+    cursor = body.next_cursor ?? undefined;
+  } while (cursor);
+  assert.deepEqual(upstreamPages, ['', '50', '100', '150']);
+  assert.equal(ids.length, 200);
+  assert.equal(new Set(ids).size, 200);
+  assert.equal(ids.at(-1), 'topic-199');
+});
+
+test('topic detail forwards empty, building, partial and unavailable readiness without inventing success', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  process.env.MCP_RATE_LIMIT_REQUESTS_PER_SECOND = '100';
+  const { client } = await connectedClient();
+  const baseFetch = globalThis.fetch;
+  let state = 'empty';
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const req = requestFrom(input, init);
+    const response = await baseFetch(input, init);
+    const url = new URL(req.url);
+    if (url.hostname !== 'firewall.test' || !url.pathname.endsWith('/conversation-topics/topic-1')) return response;
+    return Response.json({ ...await response.json(), state, topic: null,
+      discovery: { status: state === 'building' ? 'running' : 'completed' },
+      warnings: [`Explicit readiness: ${state}`] });
+  }) as typeof fetch;
+  for (state of ['empty', 'building', 'partial', 'unavailable']) {
+    const result = await client.callTool({ name: 'get_conversation_topic', arguments: { topic_id: 'topic-1' } });
+    const body = result.structuredContent as { state: string; topic: unknown; warnings: string[] };
+    assert.equal(result.isError, undefined);
+    assert.equal(body.state, state);
+    assert.equal(body.topic, null);
+    assert.deepEqual(body.warnings, [`Explicit readiness: ${state}`]);
+  }
+});
