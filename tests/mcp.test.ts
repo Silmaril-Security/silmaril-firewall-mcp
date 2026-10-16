@@ -3740,3 +3740,76 @@ test('topic detail forwards empty, building, partial and unavailable readiness w
     assert.deepEqual(body.warnings, [`Explicit readiness: ${state}`]);
   }
 });
+
+
+test('packaged customer catalog dashboard responses survive the authenticated MCP proxy', {
+  skip: !process.env.SILMARIL_TOPIC_CATALOG_DASHBOARD_REPORT,
+}, async () => {
+  const { readFile, writeFile } = await import('node:fs/promises');
+  const raw = await readFile(process.env.SILMARIL_TOPIC_CATALOG_DASHBOARD_REPORT!, 'utf8');
+  const report = JSON.parse(raw) as {
+    schema: string; status: string; artifact_sha256: string; firewall_ui_commit: string;
+    firewall_id: string; pages: Array<Record<string, unknown>>; detail: Array<Record<string, unknown>>;
+  };
+  assert.equal(report.schema, 'silmaril-topic-catalog-dashboard-contract-v2');
+  assert.equal(report.status, 'passed');
+  assert.match(report.artifact_sha256, /^[a-f0-9]{64}$/);
+  assert.ok(report.pages.length >= 3);
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  process.env.MCP_RATE_LIMIT_REQUESTS_PER_SECOND = '100';
+  const { client } = await connectedClient();
+  const baseFetch = globalThis.fetch;
+  const basePath = `/api/mcp/v1/firewalls/${encodeURIComponent(report.firewall_id)}/conversation-topics`;
+  const cursorPages = new Map<string, Record<string, unknown>>();
+  report.pages.forEach((page, index) => cursorPages.set(
+    index === 0 ? '' : String(report.pages[index - 1].next_cursor), page,
+  ));
+  const detail = report.detail[0];
+  assert.ok(detail?.topic);
+  const topicId = (detail.topic as { topic_id: string }).topic_id;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const req = requestFrom(input, init);
+    const url = new URL(req.url);
+    if (url.hostname === 'firewall.test' && url.pathname === basePath) {
+      assert.match(req.headers.get('authorization') ?? '', /^Bearer /);
+      const page = cursorPages.get(url.searchParams.get('cursor') ?? '');
+      assert.ok(page, 'The proxy must forward the exact dashboard continuation');
+      return Response.json(page);
+    }
+    if (url.hostname === 'firewall.test' && url.pathname === `${basePath}/${encodeURIComponent(topicId)}`) {
+      assert.match(req.headers.get('authorization') ?? '', /^Bearer /);
+      return Response.json(detail);
+    }
+    return baseFetch(input, init);
+  }) as typeof fetch;
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  let pageIndex = 0;
+  do {
+    const result = await client.callTool({ name: 'list_conversation_topics', arguments: {
+      firewall_id: report.firewall_id, page_size: 50, ...(cursor ? { cursor } : {}),
+    } });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    assert.deepEqual(result.structuredContent, report.pages[pageIndex]);
+    const page = result.structuredContent as { topics: Array<{ topic_id: string }>; next_cursor: string | null };
+    ids.push(...page.topics.map((topic) => topic.topic_id));
+    cursor = page.next_cursor ?? undefined;
+    pageIndex += 1;
+  } while (cursor);
+  assert.equal(pageIndex, report.pages.length);
+  assert.equal(new Set(ids).size, ids.length);
+  const detailResult = await client.callTool({ name: 'get_conversation_topic', arguments: {
+    firewall_id: report.firewall_id, topic_id: topicId,
+  } });
+  assert.equal(detailResult.isError, undefined, JSON.stringify(detailResult));
+  assert.deepEqual(detailResult.structuredContent, detail);
+  const outputPath = process.env.SILMARIL_TOPIC_CATALOG_MCP_REPORT;
+  if (outputPath) await writeFile(outputPath, JSON.stringify({
+    schema: 'silmaril-topic-catalog-proxy-contract-v2', status: 'passed',
+    artifact_sha256: report.artifact_sha256, firewall_ui_commit: report.firewall_ui_commit,
+    mcp_commit: process.env.SILMARIL_TOPIC_CATALOG_MCP_COMMIT,
+    dashboard_report_sha256: createHash('sha256').update(raw).digest('hex'),
+    topics: ids.length, pages: pageIndex,
+    checks: { authenticated_proxy: true, complete_traversal: true, exact_response_preservation: true, detail: true },
+  }, null, 2));
+});
