@@ -1,0 +1,85 @@
+name: Customer product MCP image
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: customer-product-mcp-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: customer-product-release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-west-2
+      AWS_CUSTOMER_PRODUCT_MCP_REPOSITORY: ${{ vars.AWS_CUSTOMER_PRODUCT_MCP_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+      - name: Validate publication inputs
+        env:
+          PUBLISH_ROLE_ARN: ${{ vars.AWS_CUSTOMER_PRODUCT_MCP_PUBLISH_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          node scripts/customer-product-image-manifest.mjs config
+          echo "$PUBLISH_ROLE_ARN" | grep -Eq '^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$'
+      - run: npm ci --ignore-scripts
+      - run: npm rebuild
+      - run: npm run qa
+      - name: Build and check the exact image
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --build-arg "SILMARIL_MCP_COMMIT=$GITHUB_SHA" --tag customer-mcp .
+          node scripts/check-customer-container.mjs customer-mcp "$GITHUB_SHA"
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ vars.AWS_CUSTOMER_PRODUCT_MCP_PUBLISH_ROLE_ARN }}
+          aws-region: us-west-2
+          role-session-name: customer-mcp-${{ github.run_id }}
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+      - name: Publish or verify the immutable image
+        run: |
+          set -euo pipefail
+          REPOSITORY="$AWS_CUSTOMER_PRODUCT_MCP_REPOSITORY"
+          REPO_NAME="${REPOSITORY#*/}"
+          TAG="mcp-$GITHUB_SHA"
+          test "$(aws ecr describe-repositories --repository-names "$REPO_NAME" --query 'repositories[0].imageTagMutability' --output text)" = IMMUTABLE
+          LOOKUP_OUT="$(mktemp)"
+          LOOKUP_ERR="$(mktemp)"
+          trap 'rm -f "$LOOKUP_OUT" "$LOOKUP_ERR"' EXIT
+          if aws ecr describe-images --repository-name "$REPO_NAME" --image-ids "imageTag=$TAG" --query 'imageDetails[0].imageDigest' --output text >"$LOOKUP_OUT" 2>"$LOOKUP_ERR"; then
+            DIGEST="$(cat "$LOOKUP_OUT")"
+          elif grep -q '(ImageNotFoundException)' "$LOOKUP_ERR"; then
+            docker tag customer-mcp "$REPOSITORY:$TAG"
+            docker push "$REPOSITORY:$TAG"
+            DIGEST="$(aws ecr describe-images --repository-name "$REPO_NAME" --image-ids "imageTag=$TAG" --query 'imageDetails[0].imageDigest' --output text)"
+          else
+            echo 'ECR lookup failed; refusing to treat the failure as an absent image.' >&2
+            exit 1
+          fi
+          echo "$DIGEST" | grep -Eq '^sha256:[a-f0-9]{64}$'
+          IMAGE_URI="$REPOSITORY@$DIGEST"
+          docker pull "$IMAGE_URI"
+          node scripts/check-customer-container.mjs "$IMAGE_URI" "$GITHUB_SHA"
+          docker image inspect "$IMAGE_URI" > image-inspection.json
+          node scripts/customer-product-image-manifest.mjs "$DIGEST" image-inspection.json mcp-image.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: customer-mcp-image-${{ github.sha }}
+          path: mcp-image.json
+          if-no-files-found: error
+          retention-days: 30

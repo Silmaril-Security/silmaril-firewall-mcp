@@ -1,0 +1,23 @@
+name: Self-hosted MCP
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+      - run: npm ci
+      - run: npm run qa
+      - name: Build the installation image
+        run: docker build --platform linux/amd64 --build-arg SILMARIL_MCP_COMMIT="$GITHUB_SHA" --tag customer-mcp .
+      - name: Verify read-only non-root startup
+        run: node scripts/check-customer-container.mjs customer-mcp "$GITHUB_SHA"
