@@ -3670,6 +3670,10 @@ test('adaptive topic catalogs preserve all pages, snapshot and scoped discovery 
     reason: 'assignment_coverage_below_075', eligible_conversations: 618,
     assigned_conversations: 162, last_successful_publication_at: '2026-09-09T06:02:38Z',
   };
+  const regions = [
+    { region: 'us-west-2', state: 'stale', discovery: diagnostics },
+    { region: 'us-east-1', state: 'empty', discovery: { status: 'completed' } },
+  ];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const req = requestFrom(input, init);
     const url = new URL(req.url);
@@ -3680,8 +3684,7 @@ test('adaptive topic catalogs preserve all pages, snapshot and scoped discovery 
     upstreamPages.push(url.searchParams.get('cursor') ?? '');
     return Response.json({ ...base, state: 'stale', as_of: '2026-09-09T06:02:38Z',
       discovery: diagnostics,
-      regions: [{ region: 'us-west-2', state: 'stale', discovery: diagnostics },
-        { region: 'us-east-1', state: 'empty', discovery: { status: 'completed' } }],
+      regions,
       topics: Array.from({ length: 50 }, (_, index) => ({ topic_id: `topic-${offset + index}` })),
       next_cursor: offset + 50 < 200 ? String(offset + 50) : null,
       warnings: ['The last-good catalog is stale; the latest candidate was quality rejected.'],
@@ -3696,11 +3699,11 @@ test('adaptive topic catalogs preserve all pages, snapshot and scoped discovery 
     assert.equal(result.isError, undefined, JSON.stringify(result));
     const body = result.structuredContent as { topics: Array<{ topic_id: string }>;
       next_cursor: string | null; state: string; as_of: string; discovery: typeof diagnostics;
-      regions: Array<{ state: string }>; warnings: string[] };
+      regions: typeof regions; warnings: string[] };
     assert.equal(body.state, 'stale');
     assert.equal(body.as_of, '2026-09-09T06:02:38Z');
     assert.deepEqual(body.discovery, diagnostics);
-    assert.deepEqual(body.regions.map((region) => region.state), ['stale', 'empty']);
+    assert.deepEqual(body.regions, regions);
     assert.match(body.warnings[0], /quality rejected/);
     ids.push(...body.topics.map((topic) => topic.topic_id));
     cursor = body.next_cursor ?? undefined;
@@ -3728,9 +3731,11 @@ test('topic detail forwards empty, building, partial and unavailable readiness w
   }) as typeof fetch;
   for (state of ['empty', 'building', 'partial', 'unavailable']) {
     const result = await client.callTool({ name: 'get_conversation_topic', arguments: { topic_id: 'topic-1' } });
-    const body = result.structuredContent as { state: string; topic: unknown; warnings: string[] };
+    const body = result.structuredContent as { state: string; topic: unknown; warnings: string[];
+      discovery: { status: string } };
     assert.equal(result.isError, undefined);
     assert.equal(body.state, state);
+    assert.deepEqual(body.discovery, { status: state === 'building' ? 'running' : 'completed' });
     assert.equal(body.topic, null);
     assert.deepEqual(body.warnings, [`Explicit readiness: ${state}`]);
   }
