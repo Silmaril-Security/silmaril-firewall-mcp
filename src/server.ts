@@ -917,7 +917,7 @@ export function createFirewallMcpServer(
 
   server.registerTool('list_conversation_topics', {
     title: 'List Conversation Topics',
-    description: 'List tenant-isolated stable and emerging conversation topics with daily trends, assignment coverage, and bounded hostile-evidence representatives. Topic output is derived and approximate.',
+    description: 'List tenant-isolated stable and emerging conversation topics with snapshot timestamps, assignment coverage, discovery outcomes, regional readiness, and bounded hostile-evidence representatives. Follow next_cursor for the complete adaptive catalog; page_size is limited to 50. Stale catalogs retain their original timestamp. Topic output is derived and approximate.',
     inputSchema: {
       firewall_id: FirewalledIdSchema.optional().describe(
         'Optional firewall ID. Omit to use the authenticated organization default.',
@@ -943,7 +943,7 @@ export function createFirewallMcpServer(
 
   server.registerTool('get_conversation_topic', {
     title: 'Get Conversation Topic',
-    description: 'Read one authorized topic, its daily trend and split or merge lineage, plus paginated primary or secondary conversation handles. Use get_conversation with trace consent for complete evidence.',
+    description: 'Read one authorized topic, its snapshot timestamp, discovery outcome and readiness, daily trend and split or merge lineage, plus paginated primary or secondary conversation handles. Stale or rejected refreshes are reported explicitly. Use get_conversation with trace consent for complete evidence.',
     inputSchema: {
       firewall_id: FirewalledIdSchema.optional().describe(
         'Optional firewall ID. Omit to use the authenticated organization default.',

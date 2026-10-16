@@ -3657,3 +3657,159 @@ test('chunked upstream responses are rejected as soon as they exceed the size ca
       err.code === 'upstream_response_too_large',
   );
 });
+
+
+test('adaptive topic catalogs preserve all pages, snapshot and scoped discovery diagnostics', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  process.env.MCP_RATE_LIMIT_REQUESTS_PER_SECOND = '100';
+  const { client } = await connectedClient();
+  const baseFetch = globalThis.fetch;
+  const upstreamPages: string[] = [];
+  const diagnostics = {
+    status: 'quality_rejected', run_id: 'run-v5', publication_status: 'rejected',
+    reason: 'assignment_coverage_below_075', eligible_conversations: 618,
+    assigned_conversations: 162, last_successful_publication_at: '2026-09-09T06:02:38Z',
+  };
+  const regions = [
+    { region: 'us-west-2', state: 'stale', discovery: diagnostics },
+    { region: 'us-east-1', state: 'empty', discovery: { status: 'completed' } },
+  ];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const req = requestFrom(input, init);
+    const url = new URL(req.url);
+    const response = await baseFetch(input, init);
+    if (url.hostname !== 'firewall.test' || !url.pathname.endsWith('/conversation-topics')) return response;
+    const base = await response.json();
+    const offset = Number(url.searchParams.get('cursor') ?? '0');
+    upstreamPages.push(url.searchParams.get('cursor') ?? '');
+    return Response.json({ ...base, state: 'stale', as_of: '2026-09-09T06:02:38Z',
+      discovery: diagnostics,
+      regions,
+      topics: Array.from({ length: 50 }, (_, index) => ({ topic_id: `topic-${offset + index}` })),
+      next_cursor: offset + 50 < 200 ? String(offset + 50) : null,
+      warnings: ['The last-good catalog is stale; the latest candidate was quality rejected.'],
+    });
+  }) as typeof fetch;
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const result = await client.callTool({ name: 'list_conversation_topics', arguments: {
+      page_size: 50, status: 'all', ...(cursor ? { cursor } : {}),
+    } });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const body = result.structuredContent as { topics: Array<{ topic_id: string }>;
+      next_cursor: string | null; state: string; as_of: string; discovery: typeof diagnostics;
+      regions: typeof regions; warnings: string[] };
+    assert.equal(body.state, 'stale');
+    assert.equal(body.as_of, '2026-09-09T06:02:38Z');
+    assert.deepEqual(body.discovery, diagnostics);
+    assert.deepEqual(body.regions, regions);
+    assert.match(body.warnings[0], /quality rejected/);
+    ids.push(...body.topics.map((topic) => topic.topic_id));
+    cursor = body.next_cursor ?? undefined;
+  } while (cursor);
+  assert.deepEqual(upstreamPages, ['', '50', '100', '150']);
+  assert.equal(ids.length, 200);
+  assert.equal(new Set(ids).size, 200);
+  assert.equal(ids.at(-1), 'topic-199');
+});
+
+test('topic detail forwards empty, building, partial and unavailable readiness without inventing success', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  process.env.MCP_RATE_LIMIT_REQUESTS_PER_SECOND = '100';
+  const { client } = await connectedClient();
+  const baseFetch = globalThis.fetch;
+  let state = 'empty';
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const req = requestFrom(input, init);
+    const response = await baseFetch(input, init);
+    const url = new URL(req.url);
+    if (url.hostname !== 'firewall.test' || !url.pathname.endsWith('/conversation-topics/topic-1')) return response;
+    return Response.json({ ...await response.json(), state, topic: null,
+      discovery: { status: state === 'building' ? 'running' : 'completed' },
+      warnings: [`Explicit readiness: ${state}`] });
+  }) as typeof fetch;
+  for (state of ['empty', 'building', 'partial', 'unavailable']) {
+    const result = await client.callTool({ name: 'get_conversation_topic', arguments: { topic_id: 'topic-1' } });
+    const body = result.structuredContent as { state: string; topic: unknown; warnings: string[];
+      discovery: { status: string } };
+    assert.equal(result.isError, undefined);
+    assert.equal(body.state, state);
+    assert.deepEqual(body.discovery, { status: state === 'building' ? 'running' : 'completed' });
+    assert.equal(body.topic, null);
+    assert.deepEqual(body.warnings, [`Explicit readiness: ${state}`]);
+  }
+});
+
+
+test('packaged customer catalog dashboard responses survive the authenticated MCP proxy', {
+  skip: !process.env.SILMARIL_TOPIC_CATALOG_DASHBOARD_REPORT,
+}, async () => {
+  const { readFile, writeFile } = await import('node:fs/promises');
+  const raw = await readFile(process.env.SILMARIL_TOPIC_CATALOG_DASHBOARD_REPORT!, 'utf8');
+  const report = JSON.parse(raw) as {
+    schema: string; status: string; artifact_sha256: string; firewall_ui_commit: string;
+    firewall_id: string; pages: Array<Record<string, unknown>>; detail: Array<Record<string, unknown>>;
+  };
+  assert.equal(report.schema, 'silmaril-topic-catalog-dashboard-contract-v2');
+  assert.equal(report.status, 'passed');
+  assert.match(report.artifact_sha256, /^[a-f0-9]{64}$/);
+  assert.ok(report.pages.length >= 3);
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  process.env.MCP_RATE_LIMIT_REQUESTS_PER_SECOND = '100';
+  const { client } = await connectedClient();
+  const baseFetch = globalThis.fetch;
+  const basePath = `/api/mcp/v1/firewalls/${encodeURIComponent(report.firewall_id)}/conversation-topics`;
+  const cursorPages = new Map<string, Record<string, unknown>>();
+  report.pages.forEach((page, index) => cursorPages.set(
+    index === 0 ? '' : String(report.pages[index - 1].next_cursor), page,
+  ));
+  const detail = report.detail[0];
+  assert.ok(detail?.topic);
+  const topicId = (detail.topic as { topic_id: string }).topic_id;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const req = requestFrom(input, init);
+    const url = new URL(req.url);
+    if (url.hostname === 'firewall.test' && url.pathname === basePath) {
+      assert.match(req.headers.get('authorization') ?? '', /^Bearer /);
+      const page = cursorPages.get(url.searchParams.get('cursor') ?? '');
+      assert.ok(page, 'The proxy must forward the exact dashboard continuation');
+      return Response.json(page);
+    }
+    if (url.hostname === 'firewall.test' && url.pathname === `${basePath}/${encodeURIComponent(topicId)}`) {
+      assert.match(req.headers.get('authorization') ?? '', /^Bearer /);
+      return Response.json(detail);
+    }
+    return baseFetch(input, init);
+  }) as typeof fetch;
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  let pageIndex = 0;
+  do {
+    const result = await client.callTool({ name: 'list_conversation_topics', arguments: {
+      firewall_id: report.firewall_id, page_size: 50, ...(cursor ? { cursor } : {}),
+    } });
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    assert.deepEqual(result.structuredContent, report.pages[pageIndex]);
+    const page = result.structuredContent as { topics: Array<{ topic_id: string }>; next_cursor: string | null };
+    ids.push(...page.topics.map((topic) => topic.topic_id));
+    cursor = page.next_cursor ?? undefined;
+    pageIndex += 1;
+  } while (cursor);
+  assert.equal(pageIndex, report.pages.length);
+  assert.equal(new Set(ids).size, ids.length);
+  const detailResult = await client.callTool({ name: 'get_conversation_topic', arguments: {
+    firewall_id: report.firewall_id, topic_id: topicId,
+  } });
+  assert.equal(detailResult.isError, undefined, JSON.stringify(detailResult));
+  assert.deepEqual(detailResult.structuredContent, detail);
+  const outputPath = process.env.SILMARIL_TOPIC_CATALOG_MCP_REPORT;
+  if (outputPath) await writeFile(outputPath, JSON.stringify({
+    schema: 'silmaril-topic-catalog-proxy-contract-v2', status: 'passed',
+    artifact_sha256: report.artifact_sha256, firewall_ui_commit: report.firewall_ui_commit,
+    mcp_commit: process.env.SILMARIL_TOPIC_CATALOG_MCP_COMMIT,
+    dashboard_report_sha256: createHash('sha256').update(raw).digest('hex'),
+    topics: ids.length, pages: pageIndex,
+    checks: { authenticated_proxy: true, complete_traversal: true, exact_response_preservation: true, detail: true },
+  }, null, 2));
+});
