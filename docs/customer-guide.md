@@ -234,3 +234,24 @@ If a sensitive tool rejects the call before returning evidence, the reason must 
 If you are not sure whether full payload access is needed, ask for an investigation packet first and have the agent explain what evidence is still missing.
 
 Contact Silmaril if organization access, deployment access, or expected Firewall data does not match what you see in the MCP tools.
+
+
+## Ask about selected application users
+
+Pass `userIds` to `search_conversations`, `list_conversation_topics`, or
+`get_conversation_topic`. These are exact application `metadata.userId` values
+within your authorized customer, distinct from API-key owners. Omit the field
+for the existing customer-wide query. Empty arrays are invalid. Selections allow
+up to 100 IDs, each at most 1024 UTF-8 bytes, within 6000 encoded query bytes.
+Preserve the same selection while following a cursor.
+
+Use topic lists to see what the selected users discuss, topic details for their
+conversation handles and captured user/session metadata, and semantic search
+for a free-form question. Use `get_conversation` with its existing consent and
+reason fields to retrieve complete evidence. The consumer synthesizes answers.
+
+Topic labels describe the customer catalog; counts and evidence describe your
+selection. Read `user_filter`, freshness, regional availability, and
+`history_complete` before drawing conclusions. Missing identity or unenriched
+historical captures can leave gaps. Filtered topic queries require an enriched
+catalog; they never silently fall back to all users.

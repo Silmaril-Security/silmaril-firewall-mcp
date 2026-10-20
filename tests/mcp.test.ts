@@ -1119,6 +1119,7 @@ test('conversation tools proxy POST bodies and continue audited hydration with s
     name: 'search_conversations',
     arguments: {
       query: 'conversations about access reviews',
+      userIds: ['User-A', 'User-B'],
       range: '30d',
       page_size: 20,
     },
@@ -1129,6 +1130,7 @@ test('conversation tools proxy POST bodies and continue audited hydration with s
   assert.ok(searchCall);
   assert.deepEqual(JSON.parse(searchCall.body ?? '{}'), {
     query: 'conversations about access reviews',
+      userIds: ['User-A', 'User-B'],
     range: '30d',
     page_size: 20,
   });
@@ -1250,11 +1252,37 @@ test('sensitive reason validation matches the upstream contract at the MCP tool 
   ]);
 });
 
+test('conversation tools enforce the actual repeated-key query byte limit', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '100';
+  const { client } = await connectedClient();
+  const malformed = await client.callTool({ name: 'list_conversation_topics',
+    arguments: { userIds: ['\uD800'] } });
+  assert.equal(malformed.isError, true);
+  for (const character of ['!', '~']) {
+    const userIds = [0, 1, 2].map((index) => character.repeat(1000) + index);
+    assert.ok(new URLSearchParams(userIds.map((id) => ['userIds', id])).toString().length > 6000);
+    for (const [name, extra] of [
+      ['search_conversations', { query: 'sensitive topic' }],
+      ['list_conversation_topics', {}],
+      ['get_conversation_topic', { topic_id: 'topic-1' }],
+    ] as const) {
+      const result = await client.callTool({ name, arguments: { ...extra, userIds } });
+      assert.equal(result.isError, true, name);
+    }
+  }
+  assert.equal(upstreamCalls.some((call) => /conversation/.test(new URL(call.url).pathname)), false);
+  // 3 * 1024 spaces encode as '+', rather than the longer '%20'.
+  const accepted = await client.callTool({ name: 'list_conversation_topics',
+    arguments: { userIds: [0, 1, 2].map((index) => ' '.repeat(1023) + index) } });
+  assert.equal(accepted.isError, undefined, JSON.stringify(accepted));
+});
+
 test('conversation topic tools use read-only tenant-attested GET pagination', async () => {
   const { client } = await connectedClient();
   const listed = await client.callTool({
     name: 'list_conversation_topics',
     arguments: {
+      userIds: ['User-A', 'User-B'],
       range: '30d',
       status: 'all',
       sort: 'growth',
@@ -1267,6 +1295,7 @@ test('conversation topic tools use read-only tenant-attested GET pagination', as
   assert.ok(listCall);
   const listUrl = new URL(listCall.url);
   assert.equal(listUrl.searchParams.get('range'), '30d');
+  assert.deepEqual(listUrl.searchParams.getAll('userIds'), ['User-A', 'User-B']);
   assert.equal(listUrl.searchParams.get('status'), 'all');
   assert.equal(listUrl.searchParams.get('sort'), 'growth');
   assert.equal(listUrl.searchParams.get('page_size'), '10');
