@@ -18,7 +18,7 @@ import type { McpActorContext } from './auth-context';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
-const ConversationUserIdsSchema = z.array(z.string().min(1).max(1024).refine((id) => Buffer.byteLength(id, 'utf8') <= 1024, 'User IDs must fit within 1024 UTF-8 bytes.')).min(1).max(100)
+const ConversationUserIdsSchema = z.array(z.string().min(1).max(1024).refine((id) => Buffer.from(id, 'utf8').toString('utf8') === id, 'User IDs must contain valid Unicode.').refine((id) => Buffer.byteLength(id, 'utf8') <= 1024, 'User IDs must fit within 1024 UTF-8 bytes.')).min(1).max(100)
   .refine((ids) => new URLSearchParams(ids.map((id) => ['userIds', id])).toString().length <= 6000,
     'The encoded user selection must fit within 6000 bytes.')
   .optional().describe('Exact application user IDs within the authorized customer. Topics require an enriched catalog; coverage is explicit.');

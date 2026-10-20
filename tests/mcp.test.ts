@@ -1255,6 +1255,9 @@ test('sensitive reason validation matches the upstream contract at the MCP tool 
 test('conversation tools enforce the actual repeated-key query byte limit', async () => {
   process.env.MCP_RATE_LIMIT_BURST = '100';
   const { client } = await connectedClient();
+  const malformed = await client.callTool({ name: 'list_conversation_topics',
+    arguments: { userIds: ['\uD800'] } });
+  assert.equal(malformed.isError, true);
   for (const character of ['!', '~']) {
     const userIds = [0, 1, 2].map((index) => character.repeat(1000) + index);
     assert.ok(new URLSearchParams(userIds.map((id) => ['userIds', id])).toString().length > 6000);
