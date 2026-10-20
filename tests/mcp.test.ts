@@ -1119,6 +1119,7 @@ test('conversation tools proxy POST bodies and continue audited hydration with s
     name: 'search_conversations',
     arguments: {
       query: 'conversations about access reviews',
+      userIds: ['User-A', 'User-B'],
       range: '30d',
       page_size: 20,
     },
@@ -1129,6 +1130,7 @@ test('conversation tools proxy POST bodies and continue audited hydration with s
   assert.ok(searchCall);
   assert.deepEqual(JSON.parse(searchCall.body ?? '{}'), {
     query: 'conversations about access reviews',
+      userIds: ['User-A', 'User-B'],
     range: '30d',
     page_size: 20,
   });
@@ -1255,6 +1257,7 @@ test('conversation topic tools use read-only tenant-attested GET pagination', as
   const listed = await client.callTool({
     name: 'list_conversation_topics',
     arguments: {
+      userIds: ['User-A', 'User-B'],
       range: '30d',
       status: 'all',
       sort: 'growth',
@@ -1267,6 +1270,7 @@ test('conversation topic tools use read-only tenant-attested GET pagination', as
   assert.ok(listCall);
   const listUrl = new URL(listCall.url);
   assert.equal(listUrl.searchParams.get('range'), '30d');
+  assert.deepEqual(listUrl.searchParams.getAll('userIds'), ['User-A', 'User-B']);
   assert.equal(listUrl.searchParams.get('status'), 'all');
   assert.equal(listUrl.searchParams.get('sort'), 'growth');
   assert.equal(listUrl.searchParams.get('page_size'), '10');

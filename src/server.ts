@@ -18,6 +18,11 @@ import type { McpActorContext } from './auth-context';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
+const ConversationUserIdsSchema = z.array(z.string().min(1).max(1024).refine((id) => Buffer.byteLength(id, 'utf8') <= 1024, 'User IDs must fit within 1024 UTF-8 bytes.')).min(1).max(100)
+  .refine((ids) => ids.reduce((bytes, id) => bytes + encodeURIComponent(id).length + 9, 0) <= 6000,
+    'The encoded user selection must fit within 6000 bytes.')
+  .optional().describe('Exact application user IDs within the authorized customer. Topics require an enriched catalog; coverage is explicit.');
+
 const RangeSchema = z.enum(['5m', '15m', '30m', '1h', '3h', '6h', '12h', '1d', '3d', '1w', '30d']);
 const TriageFilterSchema = z.enum(['true_positive', 'false_positive', 'triaged', 'untriaged']);
 const GroupBySchema = z.enum(['hook', 'tool', 'class', 'triage']);
@@ -869,6 +874,7 @@ export function createFirewallMcpServer(
     title: 'Search Conversations',
     description: 'Search authorized captured conversations by semantic meaning. Results are approximate handles and bounded hostile-evidence previews; use get_conversation for the audited complete evidence read.',
     inputSchema: {
+      userIds: ConversationUserIdsSchema,
       firewall_id: FirewalledIdSchema.optional().describe(
         'Optional firewall ID. Omit to use the authenticated organization default.',
       ),
@@ -919,6 +925,7 @@ export function createFirewallMcpServer(
     title: 'List Conversation Topics',
     description: 'List tenant-isolated stable and emerging conversation topics with snapshot timestamps, assignment coverage, discovery outcomes, regional readiness, and bounded hostile-evidence representatives. Follow next_cursor for the complete adaptive catalog; page_size is limited to 50. Stale catalogs retain their original timestamp. Topic output is derived and approximate.',
     inputSchema: {
+      userIds: ConversationUserIdsSchema,
       firewall_id: FirewalledIdSchema.optional().describe(
         'Optional firewall ID. Omit to use the authenticated organization default.',
       ),
@@ -945,6 +952,7 @@ export function createFirewallMcpServer(
     title: 'Get Conversation Topic',
     description: 'Read one authorized topic, its snapshot timestamp, discovery outcome and readiness, daily trend and split or merge lineage, plus paginated primary or secondary conversation handles. Stale or rejected refreshes are reported explicitly. Use get_conversation with trace consent for complete evidence.',
     inputSchema: {
+      userIds: ConversationUserIdsSchema,
       firewall_id: FirewalledIdSchema.optional().describe(
         'Optional firewall ID. Omit to use the authenticated organization default.',
       ),
