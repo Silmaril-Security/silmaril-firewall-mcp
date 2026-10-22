@@ -14,7 +14,7 @@
     "test:customer-product": "node --test scripts/customer-product-image-manifest.test.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "jose": "^6.2.4",
     "next": "^16.3.6",
     "react": "^19.2.8",
