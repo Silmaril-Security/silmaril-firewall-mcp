@@ -27,6 +27,7 @@ try {
   assert.equal((await fetch(`${base}/readyz`, { signal: AbortSignal.timeout(5000) })).status, 503, 'Unconfigured image must not claim customer readiness');
   docker('exec', name, 'node', '-e', `
     const fs = require('node:fs');
+    if (process.version !== 'v22.23.4') throw new Error('Expected Node.js v22.23.4');
     if (process.getuid() !== 1000) throw new Error('Expected installation UID');
     for (const dir of ['/tmp', '/app/.next/cache']) {
       const path = dir + '/writable-probe'; fs.writeFileSync(path, 'ok'); fs.unlinkSync(path);
