@@ -626,6 +626,7 @@ export async function handleAuthorizationRequest(
     }, { status: 405, headers: { allow: 'GET' } });
   }
   const url = new URL(req.url);
+  const requestedClientId = url.searchParams.get('client_id');
   let upstream: FirewallMcpPublicConfig;
   try {
     upstream = await getFirewallMcpPublicConfig(config, req.signal);
@@ -637,7 +638,11 @@ export async function handleAuthorizationRequest(
   }
   let client: OAuthClient;
   try {
-    client = await resolveClient(url.searchParams.get('client_id'), upstream.scopes, config);
+    if (!requestedClientId) throw new Error('Missing OAuth client ID.');
+    client = await resolveClient(requestedClientId, upstream.scopes, config);
+    if (client.clientId !== requestedClientId) {
+      throw new Error('Resolved OAuth client identity does not match the request.');
+    }
   } catch {
     return json({
       error: 'invalid_request',
@@ -709,7 +714,7 @@ export async function handleAuthorizationRequest(
     const state: BridgeState = {
       v: ARTIFACT_VERSION,
       redirect_uri: redirectUri,
-      client_id: client.clientId,
+      client_id: requestedClientId,
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
       resource,

@@ -165,6 +165,14 @@ function s256Challenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url');
 }
 
+function signedPayload(value: string, expectedPurpose: string): Record<string, unknown> {
+  const [purpose, encoded, signature] = value.split('.');
+  assert.equal(purpose, expectedPurpose);
+  assert.ok(encoded);
+  assert.ok(signature);
+  return JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+}
+
 const TEST_CODE_VERIFIER = 'codex-pkce-verifier-with-at-least-forty-three-characters-001';
 const TEST_CODE_CHALLENGE = s256Challenge(TEST_CODE_VERIFIER);
 
@@ -2199,6 +2207,7 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   const clientId = await registerClient();
   const flow = await completeAuthorization(clientId);
   const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
+  const bridgeState = flow.upstreamAuthorization.searchParams.get('state') ?? '';
 
   assert.equal(flow.authorization.status, 302);
   assert.equal(flow.authorization.headers.get('content-type'), null);
@@ -2214,6 +2223,7 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   );
   assert.equal(flow.upstreamAuthorization.searchParams.get('prompt'), 'consent');
   assert.equal(flow.upstreamAuthorization.searchParams.get('ext-mcp-client-name'), 'QA MCP Client');
+  assert.equal(signedPayload(bridgeState, 'state2').client_id, clientId);
   assert.equal(
     flow.upstreamAuthorization.searchParams.get('ext-mcp-client-callback'),
     'http://127.0.0.1:1455/oauth/callback',
@@ -2230,7 +2240,8 @@ test('CIMD authorization and code exchange revalidate expired metadata without c
   authMetadataOverride = {
     authorization_response_iss_parameter_supported: true,
   };
-  const clientId = 'https://client.example/oauth/client-metadata.json';
+  const clientId = 'https://client.example/oauth/%7eclient-metadata.json'
+    + '?client%5fid=Codex%2fCLI&v=01';
   let now = 1_000;
   let resolutions = 0;
   let metadataRequests = 0;
@@ -2262,9 +2273,11 @@ test('CIMD authorization and code exchange revalidate expired metadata without c
 
   const flow = await completeAuthorization(clientId);
   const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
+  const bridgeState = flow.upstreamAuthorization.searchParams.get('state') ?? '';
   assert.equal(flow.authorization.status, 302);
   assert.equal(flow.callback.status, 302);
   assert.equal(callbackLocation.searchParams.get('iss'), 'https://mcp.test');
+  assert.equal(signedPayload(bridgeState, 'state2').client_id, clientId);
   assert.equal(metadataRequests, 1);
 
   const redirectMismatch = await handleAuthorizationRequest(
