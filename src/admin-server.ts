@@ -1,12 +1,8 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
-import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
+import { McpServer, type ServerContext } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { ServerConfig } from './config';
 import { FirewallApiError, firewallGetJson, pathWithQuery } from './firewall-ui-client';
 import { downstreamToken } from './auth-context';
-
-type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
 const ActivityRangeSchema = z.enum(['1d', '7d', '30d', '90d']);
 const TenantSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
@@ -19,8 +15,8 @@ const readOnlyAnnotations = {
   openWorldHint: false,
 } as const;
 
-function token(extra: Extra): string {
-  return downstreamToken(extra.authInfo);
+function token(ctx: ServerContext): string {
+  return downstreamToken(ctx.http?.authInfo);
 }
 
 function result(toolName: string, payload: unknown) {
@@ -47,15 +43,15 @@ function errorResult(err: unknown) {
 async function callAdmin(
   toolName: string,
   path: string,
-  extra: Extra,
+  ctx: ServerContext,
   config: ServerConfig,
 ) {
   try {
     return result(toolName, await firewallGetJson({
       path,
-      token: token(extra),
+      token: token(ctx),
       config,
-      signal: extra.signal,
+      signal: ctx.mcpReq.signal,
     }));
   } catch (err) {
     return errorResult(err);
@@ -87,31 +83,31 @@ export function createAdminMcpServer(config: ServerConfig): McpServer {
   server.registerTool('get_mcp_adoption_summary', {
     title: 'Get MCP Adoption Summary',
     description: 'Summarize MCP calls, outcomes, active tenants/users, daily activity, and tool/category mix.',
-    inputSchema: {
+    inputSchema: z.object({
       range: ActivityRangeSchema.default('30d'),
       tenant: TenantSchema.optional(),
-    },
+    }),
     annotations: readOnlyAnnotations,
-  }, async ({ range, tenant }, extra) => callAdmin(
+  }, async ({ range, tenant }, ctx) => callAdmin(
     'get_mcp_adoption_summary',
     pathWithQuery('/api/mcp/v1/admin/activity/summary', { range, tenant }),
-    extra,
+    ctx,
     config,
   ));
 
   server.registerTool('list_mcp_activity', {
     title: 'List MCP Activity',
     description: 'List the newest named-actor MCP activity events with validated filters.',
-    inputSchema: {
+    inputSchema: z.object({
       range: ActivityRangeSchema.default('30d'),
       tenant: TenantSchema.optional(),
       actor_email: z.string().email().max(320).optional(),
       tool_name: ToolSchema.optional(),
       outcome: z.enum(['success', 'error']).optional(),
       limit: z.number().int().min(1).max(100).default(50),
-    },
+    }),
     annotations: readOnlyAnnotations,
-  }, async ({ range, tenant, actor_email, tool_name, outcome, limit }, extra) => callAdmin(
+  }, async ({ range, tenant, actor_email, tool_name, outcome, limit }, ctx) => callAdmin(
     'list_mcp_activity',
     pathWithQuery('/api/mcp/v1/admin/activity/recent', {
       range,
@@ -121,7 +117,7 @@ export function createAdminMcpServer(config: ServerConfig): McpServer {
       outcome,
       limit,
     }),
-    extra,
+    ctx,
     config,
   ));
 

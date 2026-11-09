@@ -14,7 +14,7 @@
     "test:customer-product": "node --test scripts/customer-product-image-manifest.test.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "ip-address": "10.7.2",
     "jose": "^6.2.4",
     "next": "^16.4.1",
@@ -23,6 +23,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

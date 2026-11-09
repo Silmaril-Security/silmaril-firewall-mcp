@@ -3,8 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import type { ServerConfig } from '../src/config';
 import { createFirewallMcpServer } from '../src/server';
 
@@ -121,7 +120,13 @@ test('sensitive-read docs match the advertised reason bounds', async (t) => {
     activityIngestKey: null,
   };
   const server = createFirewallMcpServer(config);
-  const client = new Client({ name: 'docs-test-client', version: '0.1.0' });
+  const client = new Client(
+    { name: 'docs-test-client', version: '0.1.0' },
+    {
+      supportedProtocolVersions: ['2025-11-25'],
+      versionNegotiation: { mode: 'legacy' },
+    },
+  );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   t.after(async () => {
     await client.close();
