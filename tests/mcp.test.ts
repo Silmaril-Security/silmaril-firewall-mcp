@@ -2,14 +2,15 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import test, { afterEach, beforeEach } from 'node:test';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { createMcpHandler, inputRequired, McpServer } from '@modelcontextprotocol/server';
 import {
   exportJWK,
   generateKeyPair,
   jwtVerify,
   SignJWT,
 } from 'jose';
+import { z } from 'zod';
 import { handleMcpRequest } from '../src/http';
 import { readConfig } from '../src/config';
 import {
@@ -974,9 +975,100 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000) {
   assert.equal(predicate(), true);
 }
 
+const LEGACY_PROTOCOL_VERSION = '2025-11-25';
+const MODERN_PROTOCOL_VERSION = '2026-07-28';
+const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
+const CLIENT_INFO_META_KEY = 'io.modelcontextprotocol/clientInfo';
+const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
+const SERVER_INFO_META_KEY = 'io.modelcontextprotocol/serverInfo';
+
+function legacyClientOptions() {
+  return {
+    supportedProtocolVersions: [LEGACY_PROTOCOL_VERSION],
+    versionNegotiation: { mode: 'legacy' as const },
+  };
+}
+
+interface ModernRequestOptions {
+  mode?: 'public' | 'admin';
+  id?: number;
+  name?: string;
+  protocolVersion?: string;
+  headerProtocolVersion?: string;
+  headerMethod?: string;
+  includeProtocolHeader?: boolean;
+  includeMethodHeader?: boolean;
+  includeNameHeader?: boolean;
+  includeClientInfo?: boolean;
+  clientCapabilities?: Record<string, unknown>;
+}
+
+function rawModernRequest(
+  url: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  options: ModernRequestOptions = {},
+): Request {
+  const protocolVersion = options.protocolVersion ?? MODERN_PROTOCOL_VERSION;
+  const headers = new Headers({
+    'content-type': 'application/json',
+    'mcp-protocol-version': options.headerProtocolVersion ?? protocolVersion,
+    'mcp-method': options.headerMethod ?? method,
+  });
+  if (options.name !== undefined) {
+    headers.set('mcp-name', options.name);
+  }
+  if (options.includeProtocolHeader === false) headers.delete('mcp-protocol-version');
+  if (options.includeMethodHeader === false) headers.delete('mcp-method');
+  if (options.includeNameHeader === false) headers.delete('mcp-name');
+  const envelope: Record<string, unknown> = {
+    [PROTOCOL_VERSION_META_KEY]: protocolVersion,
+    [CLIENT_CAPABILITIES_META_KEY]: options.clientCapabilities ?? {},
+  };
+  if (options.includeClientInfo !== false) {
+    envelope[CLIENT_INFO_META_KEY] = {
+      name: 'raw-modern-test-client',
+      version: '0.1.0',
+    };
+  }
+  return new Request(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: options.id ?? 1,
+      method,
+      params: {
+        ...params,
+        _meta: envelope,
+      },
+    }),
+  });
+}
+
+async function rawModernHostRequest(
+  method: string,
+  params: Record<string, unknown> = {},
+  options: ModernRequestOptions = {},
+): Promise<Response> {
+  const mode = options.mode ?? 'public';
+  const request = rawModernRequest(
+    mode === 'admin' ? 'https://mcp.test/admin/mcp' : 'https://mcp.test/mcp',
+    method,
+    params,
+    options,
+  );
+  request.headers.set('authorization', `Bearer ${mcpAccessToken(mode)}`);
+  request.headers.set('origin', 'https://codex.test');
+  return handleMcpRequest(request, { mode });
+}
+
 async function connectedClient(accessToken = mcpAccessToken()) {
   installMockFetch();
-  const client = new Client({ name: 'mcp-test-client', version: '0.1.0' });
+  const client = new Client(
+    { name: 'mcp-test-client', version: '0.1.0' },
+    legacyClientOptions(),
+  );
   const transport = new StreamableHTTPClientTransport(new URL('https://mcp.test/mcp'), {
     requestInit: {
       headers: {
@@ -993,7 +1085,10 @@ async function connectedClient(accessToken = mcpAccessToken()) {
 async function connectedAdminClient() {
   mcpMode = 'admin';
   installMockFetch();
-  const client = new Client({ name: 'mcp-admin-test-client', version: '0.1.0' });
+  const client = new Client(
+    { name: 'mcp-admin-test-client', version: '0.1.0' },
+    legacyClientOptions(),
+  );
   const transport = new StreamableHTTPClientTransport(new URL('https://mcp.test/admin/mcp'), {
     requestInit: {
       headers: {
@@ -1008,7 +1103,8 @@ async function connectedAdminClient() {
 }
 
 test('initializes, lists tools, calls list_firewalls, and forwards bearer auth', async () => {
-  const { client } = await connectedClient();
+  const { client, transport } = await connectedClient();
+  assert.equal(transport.protocolVersion, LEGACY_PROTOCOL_VERSION);
   const tools = await client.listTools();
   assert.ok(tools.tools.some((tool) => tool.name === 'list_firewalls'));
   assert.ok(tools.tools.some((tool) => tool.name === 'get_schema'));
@@ -1048,6 +1144,262 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(result.isError, undefined);
   assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('raw 2026 requests discover and call the public and admin MCP surfaces', async () => {
+  installMockFetch();
+
+  const discoverResponse = await rawModernHostRequest(
+    'server/discover',
+    {},
+    { includeClientInfo: false },
+  );
+  assert.equal(discoverResponse.status, 200);
+  const discover = await discoverResponse.json() as {
+    result: {
+      supportedVersions: string[];
+      resultType: string;
+      ttlMs: number;
+      cacheScope: string;
+      _meta: Record<string, { name: string; version: string }>;
+    };
+  };
+  assert.deepEqual(discover.result.supportedVersions, [MODERN_PROTOCOL_VERSION]);
+  assert.equal(discover.result.resultType, 'complete');
+  assert.equal(discover.result.ttlMs, 0);
+  assert.equal(discover.result.cacheScope, 'private');
+  assert.deepEqual(discover.result._meta[SERVER_INFO_META_KEY], {
+    name: 'silmaril-firewall-mcp',
+    version: '0.1.0',
+  });
+
+  const toolsResponse = await rawModernHostRequest('tools/list');
+  assert.equal(toolsResponse.status, 200);
+  const tools = await toolsResponse.json() as {
+    result: {
+      tools: Array<{ name: string }>;
+      resultType: string;
+      ttlMs: number;
+      cacheScope: string;
+      _meta: Record<string, { name: string }>;
+    };
+  };
+  assert.equal(tools.result.resultType, 'complete');
+  assert.equal(tools.result.ttlMs, 0);
+  assert.equal(tools.result.cacheScope, 'private');
+  assert.equal(tools.result.tools.length, 15);
+  assert.ok(tools.result.tools.some((tool) => tool.name === 'list_firewalls'));
+  assert.equal(tools.result._meta[SERVER_INFO_META_KEY]?.name, 'silmaril-firewall-mcp');
+
+  const callResponse = await rawModernHostRequest(
+    'tools/call',
+    { name: 'list_firewalls', arguments: {} },
+    { name: 'list_firewalls' },
+  );
+  assert.equal(callResponse.status, 200);
+  const call = await callResponse.json() as {
+    result: {
+      resultType: string;
+      structuredContent: { items: Array<{ firewall_id: string }> };
+      _meta: Record<string, { name: string }>;
+    };
+  };
+  assert.equal(call.result.resultType, 'complete');
+  assert.equal(call.result.structuredContent.items[0].firewall_id, 'yc-prod-us-west-2');
+  assert.equal(call.result._meta[SERVER_INFO_META_KEY]?.name, 'silmaril-firewall-mcp');
+
+  const adminResponse = await rawModernHostRequest(
+    'tools/list',
+    {},
+    { mode: 'admin' },
+  );
+  assert.equal(adminResponse.status, 200);
+  const admin = await adminResponse.json() as {
+    result: {
+      tools: Array<{ name: string }>;
+      resultType: string;
+      _meta: Record<string, { name: string }>;
+    };
+  };
+  assert.deepEqual(
+    admin.result.tools.map((tool) => tool.name),
+    ['get_mcp_adoption_summary', 'list_mcp_activity'],
+  );
+  assert.equal(admin.result.resultType, 'complete');
+  assert.equal(admin.result._meta[SERVER_INFO_META_KEY]?.name, 'silmaril-firewall-admin-mcp');
+});
+
+test('raw 2026 requests enforce protocol, method, and name headers', async () => {
+  installMockFetch();
+  const cases: Array<{
+    options: ModernRequestOptions;
+    expectedCode: number;
+  }> = [
+    {
+      options: {
+        name: 'list_firewalls',
+        includeProtocolHeader: false,
+      },
+      expectedCode: -32020,
+    },
+    {
+      options: {
+        name: 'list_firewalls',
+        includeMethodHeader: false,
+      },
+      expectedCode: -32020,
+    },
+    {
+      options: {
+        name: 'list_firewalls',
+        includeNameHeader: false,
+      },
+      expectedCode: -32020,
+    },
+    {
+      options: {
+        name: 'list_firewalls',
+        headerMethod: 'tools/list',
+      },
+      expectedCode: -32020,
+    },
+    {
+      options: {
+        name: 'different_tool',
+      },
+      expectedCode: -32020,
+    },
+    {
+      options: {
+        name: 'list_firewalls',
+        protocolVersion: '2099-01-01',
+        headerProtocolVersion: '2099-01-01',
+      },
+      expectedCode: -32022,
+    },
+  ];
+
+  for (const { options, expectedCode } of cases) {
+    resetRateLimitsForTests();
+    const response = await rawModernHostRequest(
+      'tools/call',
+      { name: 'list_firewalls', arguments: {} },
+      options,
+    );
+    assert.equal(response.status, 400);
+    const payload = await response.json() as { error: { code: number } };
+    assert.equal(payload.error.code, expectedCode);
+  }
+
+  const preflight = await handleMcpRequest(new Request('https://mcp.test/mcp', {
+    method: 'OPTIONS',
+    headers: { origin: 'https://codex.test' },
+  }));
+  const allowedHeaders = preflight.headers.get('access-control-allow-headers') ?? '';
+  assert.match(allowedHeaders, /mcp-method/i);
+  assert.match(allowedHeaders, /mcp-name/i);
+});
+
+test('a test-only input-required server returns -32021 without the declared client capability', async (t) => {
+  const handler = createMcpHandler(() => {
+    const server = new McpServer({
+      name: 'input-required-test-server',
+      version: '0.1.0',
+    });
+    server.registerTool('confirm', {
+      inputSchema: z.object({}),
+    }, async () => inputRequired({
+      inputRequests: {
+        confirm: inputRequired.elicit({
+          message: 'Confirm the test operation.',
+          requestedSchema: z.object({ confirmed: z.boolean() }),
+        }),
+      },
+    }));
+    return server;
+  });
+  t.after(() => handler.close());
+
+  const response = await handler.fetch(rawModernRequest(
+    'https://mcp.test/test-only',
+    'tools/call',
+    { name: 'confirm', arguments: {} },
+    { name: 'confirm', clientCapabilities: {} },
+  ));
+  assert.equal(response.status, 400);
+  const payload = await response.json() as { error: { code: number } };
+  assert.equal(payload.error.code, -32021);
+});
+
+test('per-request MCP servers close after JSON completion and stream cancellation', async (t) => {
+  let jsonClosed = 0;
+  const jsonHandler = createMcpHandler(() => {
+    const server = new McpServer({
+      name: 'json-lifecycle-test-server',
+      version: '0.1.0',
+    });
+    server.registerTool('complete', {
+      inputSchema: z.object({}),
+    }, async () => ({
+      content: [{ type: 'text', text: 'complete' }],
+    }));
+    server.server.onclose = () => {
+      jsonClosed += 1;
+    };
+    return server;
+  });
+  t.after(() => jsonHandler.close());
+
+  const jsonResponse = await jsonHandler.fetch(rawModernRequest(
+    'https://mcp.test/test-only',
+    'tools/call',
+    { name: 'complete', arguments: {} },
+    { name: 'complete' },
+  ));
+  assert.equal(jsonResponse.status, 200);
+  await jsonResponse.json();
+  await waitFor(() => jsonClosed === 1);
+
+  let streamClosed = 0;
+  let requestAborted = false;
+  const streamHandler = createMcpHandler(() => {
+    const server = new McpServer({
+      name: 'stream-lifecycle-test-server',
+      version: '0.1.0',
+    });
+    server.server.onclose = () => {
+      streamClosed += 1;
+    };
+    server.registerTool('stream', {
+      inputSchema: z.object({}),
+    }, async (_args, ctx) => {
+      await ctx.mcpReq.notify({
+        method: 'notifications/progress',
+        params: { progressToken: 'lifecycle-test', progress: 1 },
+      });
+      await new Promise<void>((resolve) => {
+        ctx.mcpReq.signal.addEventListener('abort', () => {
+          requestAborted = true;
+          resolve();
+        }, { once: true });
+      });
+      return { content: [{ type: 'text', text: 'cancelled' }] };
+    });
+    return server;
+  });
+  t.after(() => streamHandler.close());
+
+  const streamResponse = await streamHandler.fetch(rawModernRequest(
+    'https://mcp.test/test-only',
+    'tools/call',
+    { name: 'stream', arguments: {} },
+    { name: 'stream' },
+  ));
+  assert.match(streamResponse.headers.get('content-type') ?? '', /text\/event-stream/);
+  assert.equal(streamClosed, 0, 'the server must remain open while its response stream is live');
+  assert.ok(streamResponse.body);
+  await streamResponse.body.cancel('test cancellation');
+  await waitFor(() => streamClosed === 1 && requestAborted);
 });
 
 test('public tool input cap accepts the documented 108-element maximum and exact 128-element boundaries', async () => {
@@ -1770,7 +2122,10 @@ test('scope-neutral principal preflight preserves narrow signed upstream credent
       'public',
       `narrow-${scopes.join('-')}`,
     );
-    const client = new Client({ name: 'narrow-scope-test-client', version: '0.1.0' });
+    const client = new Client(
+      { name: 'narrow-scope-test-client', version: '0.1.0' },
+      legacyClientOptions(),
+    );
     const transport = new StreamableHTTPClientTransport(new URL('https://mcp.test/mcp'), {
       requestInit: { headers: { authorization: `Bearer ${accessToken}` } },
       fetch: globalThis.fetch,

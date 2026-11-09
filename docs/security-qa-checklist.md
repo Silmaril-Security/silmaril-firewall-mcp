@@ -58,6 +58,9 @@
 - SageMaker path covers metrics, findings, detail, and trace source behavior.
 - Self-hosted ECS path covers ECS metrics, findings table override, capability degradation, and single-event trace fallback.
 - Capability responses expose runtime, deployment kind, source references, generated timestamp, freshness where available, and warnings.
+- The MCP endpoint uses one `@modelcontextprotocol/server` 2.4 server factory per public/admin surface with the SDK's default stateless legacy fallback. A v2 typed client pinned to the 2025 legacy sequence covers initialize, tool discovery/calls, authorization boundaries, quotas, body limits, batching, and the 128/8 input caps.
+- Raw 2026-07-28 coverage verifies `server/discover`, public/admin tool discovery, tool calls, optional client identity, required protocol/method/name headers, complete-result discrimination, cache fields, server identity metadata, `-32020`, `-32021`, `-32022`, request cancellation, and per-request teardown.
+- The application retains origin, bearer, principal/admin, scope, rate, body, CORS, activity, OAuth, and upstream-response controls outside the SDK handler. The SDK owns per-exchange request abort, response-stream completion, and server teardown.
 
 ## Required Proof Before Production
 

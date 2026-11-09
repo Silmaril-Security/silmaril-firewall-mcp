@@ -1,12 +1,11 @@
-import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { createMcpHandler, type AuthInfo } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { readConfig, type ServerConfig } from './config';
 import {
   type McpResourceKind,
   wwwAuthenticateHeader,
 } from './oauth-metadata';
-import { createFirewallMcpServer } from './server';
+import { createFirewallMcpServer, type ActivityRecorder } from './server';
 import { assertAdminAccess, createAdminMcpServer } from './admin-server';
 import { submitMcpActivity } from './activity';
 import { FirewallApiError, firewallGetJson } from './firewall-ui-client';
@@ -31,6 +30,8 @@ const CORS_ALLOW_HEADERS = [
   'last-event-id',
   'mcp-session-id',
   'mcp-protocol-version',
+  'mcp-method',
+  'mcp-name',
 ].join(', ');
 
 const CORS_EXPOSE_HEADERS = [
@@ -70,6 +71,35 @@ const TOOL_COSTS: Record<string, number> = {
   list_conversation_topics: 2,
   get_conversation_topic: 2,
 };
+
+interface HandlerRequestContext {
+  config: ServerConfig;
+  recordActivity?: ActivityRecorder;
+}
+
+const publicRequestContexts = new Map<Request, HandlerRequestContext>();
+const adminRequestContexts = new Map<Request, HandlerRequestContext>();
+
+function requestContext(
+  request: Request | undefined,
+  contexts: Map<Request, HandlerRequestContext>,
+): HandlerRequestContext {
+  const context = request ? contexts.get(request) : undefined;
+  if (!context) {
+    throw new Error('Missing MCP request context.');
+  }
+  return context;
+}
+
+const publicMcpHandler = createMcpHandler(({ requestInfo }) => {
+  const context = requestContext(requestInfo, publicRequestContexts);
+  return createFirewallMcpServer(context.config, context.recordActivity);
+});
+
+const adminMcpHandler = createMcpHandler(({ requestInfo }) => {
+  const context = requestContext(requestInfo, adminRequestContexts);
+  return createAdminMcpServer(context.config);
+});
 
 function json(
   status: number,
@@ -329,20 +359,22 @@ export async function handleMcpRequest(
     }
   }
 
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: undefined,
-    enableJsonResponse: true,
-  });
-  const server = mode === 'admin'
-    ? createAdminMcpServer(config)
-    : createFirewallMcpServer(config, (event) => {
+  const contexts = mode === 'admin' ? adminRequestContexts : publicRequestContexts;
+  const handler = mode === 'admin' ? adminMcpHandler : publicMcpHandler;
+  const recordActivity: ActivityRecorder | undefined = mode === 'public'
+    ? (event) => {
       if (!config.activityEnabled || !options.defer) return;
       options.defer(() => submitMcpActivity(event, config));
+    }
+    : undefined;
+  contexts.set(transportRequest, { config, recordActivity });
+  try {
+    const response = await handler.fetch(transportRequest, {
+      authInfo: authInfo(token, credential, principal),
+      ...(req.method === 'POST' ? { parsedBody: message } : {}),
     });
-  await server.connect(transport);
-
-  const response = await transport.handleRequest(transportRequest, {
-    authInfo: authInfo(token, credential, principal),
-  });
-  return withCors(response, origin.origin);
+    return withCors(response, origin.origin);
+  } finally {
+    contexts.delete(transportRequest);
+  }
 }
