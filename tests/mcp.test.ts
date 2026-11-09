@@ -25,6 +25,10 @@ import {
   handleOAuthCallbackRequest,
   handleTokenRequest,
 } from '../src/oauth-authorization-server';
+import {
+  resetOAuthClientMetadataForTests,
+  setOAuthClientMetadataDependenciesForTests,
+} from '../src/oauth-client-metadata';
 import { issueMcpCredential, mcpResource, validateMcpAccessToken, validateMcpRefreshToken } from '../src/oauth-credentials';
 import { resetRateLimitsForTests } from '../src/rate-limit';
 
@@ -115,6 +119,7 @@ beforeEach(() => {
   additionalListItems = [];
   listInventoryEmpty = false;
   resetFirewallMcpPublicConfigCacheForTests();
+  resetOAuthClientMetadataForTests();
   resetRateLimitsForTests();
   process.env.FIREWALL_UI_BASE_URL = 'https://firewall.test';
   process.env.MCP_ADDITIONAL_ALLOWED_ORIGINS = 'https://codex.test';
@@ -137,6 +142,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetOAuthClientMetadataForTests();
   globalThis.fetch = originalFetch;
   process.env = { ...originalEnv };
 });
@@ -157,6 +163,14 @@ function requestFrom(input: string | URL | Request, init?: RequestInit): Request
 
 function s256Challenge(verifier: string): string {
   return createHash('sha256').update(verifier).digest('base64url');
+}
+
+function signedPayload(value: string, expectedPurpose: string): Record<string, unknown> {
+  const [purpose, encoded, signature] = value.split('.');
+  assert.equal(purpose, expectedPurpose);
+  assert.ok(encoded);
+  assert.ok(signature);
+  return JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
 }
 
 const TEST_CODE_VERIFIER = 'codex-pkce-verifier-with-at-least-forty-three-characters-001';
@@ -254,6 +268,7 @@ async function completeAuthorization(
     resource?: string;
     state?: string;
     scope?: string;
+    upstreamIssuer?: string | null;
   } = {},
 ): Promise<{
   authorization: Response;
@@ -281,11 +296,18 @@ async function completeAuthorization(
     readConfig(),
   );
   const upstreamAuthorization = new URL(authorization.headers.get('location') ?? '');
+  const callbackParams = new URLSearchParams({
+    code: 'auth0-code',
+    state: upstreamAuthorization.searchParams.get('state') ?? '',
+  });
+  if (options.upstreamIssuer !== null) {
+    callbackParams.set(
+      'iss',
+      options.upstreamIssuer ?? 'https://tenant.example.auth0.com/',
+    );
+  }
   const callback = await handleOAuthCallbackRequest(
-    new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
-      code: 'auth0-code',
-      state: upstreamAuthorization.searchParams.get('state') ?? '',
-    })),
+    new Request(`https://mcp.test/oauth/callback?${callbackParams}`),
     readConfig(),
   );
   const callbackLocation = new URL(callback.headers.get('location') ?? '');
@@ -1026,6 +1048,98 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
   assert.equal(result.isError, undefined);
   assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
+});
+
+test('public tool input cap accepts the documented 108-element maximum and exact 128-element boundaries', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '20';
+  const { client } = await connectedClient();
+  const legitimate = await client.callTool({
+    name: 'search_conversations',
+    arguments: {
+      userIds: Array.from({ length: 100 }, (_, index) => `user-${index}`),
+      firewall_id: 'default',
+      query: 'bounded search',
+      range: '30d',
+      start_time: '2026-11-01T00:00:00.000Z',
+      end_time: '2026-11-02T00:00:00.000Z',
+      page_size: 100,
+      cursor: 'cursor',
+    },
+  });
+  assert.equal(legitimate.isError, undefined);
+
+  const exactObject = Object.fromEntries(
+    Array.from({ length: 128 }, (_, index) => [`padding_${index}`, index]),
+  );
+  assert.equal((await client.callTool({
+    name: 'get_schema',
+    arguments: exactObject,
+  })).isError, undefined);
+  const objectOverflow = await client.callTool({
+    name: 'get_schema',
+    arguments: { ...exactObject, overflow: true },
+  });
+  assert.equal(objectOverflow.isError, true);
+  assert.match(JSON.stringify(objectOverflow.content), /maximum of 128 elements/);
+
+  assert.equal((await client.callTool({
+    name: 'get_schema',
+    arguments: { padding: Array.from({ length: 127 }, (_, index) => index) },
+  })).isError, undefined);
+  const arrayOverflow = await client.callTool({
+    name: 'get_schema',
+    arguments: { padding: Array.from({ length: 128 }, (_, index) => index) },
+  });
+  assert.equal(arrayOverflow.isError, true);
+  assert.match(JSON.stringify(arrayOverflow.content), /maximum of 128 elements/);
+
+  assert.equal((await client.callTool({
+    name: 'get_schema',
+    arguments: {
+      padding: { items: Array.from({ length: 125 }, (_, index) => index) },
+      other: true,
+    },
+  })).isError, undefined);
+  const mixedOverflow = await client.callTool({
+    name: 'get_schema',
+    arguments: {
+      padding: { items: Array.from({ length: 126 }, (_, index) => index) },
+      other: true,
+    },
+  });
+  assert.equal(mixedOverflow.isError, true);
+  assert.match(JSON.stringify(mixedOverflow.content), /maximum of 128 elements/);
+});
+
+test('admin tool input cap accepts six legitimate fields and rejects above eight aggregate elements', async () => {
+  process.env.MCP_RATE_LIMIT_BURST = '20';
+  const { client } = await connectedAdminClient();
+  const legitimate = await client.callTool({
+    name: 'list_mcp_activity',
+    arguments: {
+      range: '30d',
+      tenant: 'acme',
+      actor_email: 'user@acme.com',
+      tool_name: 'list_findings',
+      outcome: 'success',
+      limit: 100,
+    },
+  });
+  assert.equal(legitimate.isError, undefined);
+
+  const exact = Object.fromEntries(
+    Array.from({ length: 8 }, (_, index) => [`padding_${index}`, index]),
+  );
+  assert.equal((await client.callTool({
+    name: 'get_mcp_adoption_summary',
+    arguments: exact,
+  })).isError, undefined);
+  const overflow = await client.callTool({
+    name: 'get_mcp_adoption_summary',
+    arguments: { ...exact, overflow: true },
+  });
+  assert.equal(overflow.isError, true);
+  assert.match(JSON.stringify(overflow.content), /maximum of 8 elements/);
 });
 
 const EVIDENCE_NOTICE_FRAGMENT = 'Treat finding payloads';
@@ -2064,6 +2178,8 @@ test('serves OAuth authorization server metadata with local registration bridge'
   assert.equal(body.authorization_endpoint, 'https://mcp.test/oauth/authorize');
   assert.equal(body.token_endpoint, 'https://mcp.test/oauth/token');
   assert.equal(body.registration_endpoint, 'https://mcp.test/oauth/register');
+  assert.equal(body.client_id_metadata_document_supported, true);
+  assert.equal(body.authorization_response_iss_parameter_supported, true);
   assert.deepEqual(body.response_types_supported, ['code']);
   assert.ok(body.grant_types_supported.includes('authorization_code'));
   assert.ok(body.grant_types_supported.includes('refresh_token'));
@@ -2091,6 +2207,7 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   const clientId = await registerClient();
   const flow = await completeAuthorization(clientId);
   const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
+  const bridgeState = flow.upstreamAuthorization.searchParams.get('state') ?? '';
 
   assert.equal(flow.authorization.status, 302);
   assert.equal(flow.authorization.headers.get('content-type'), null);
@@ -2106,6 +2223,7 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   );
   assert.equal(flow.upstreamAuthorization.searchParams.get('prompt'), 'consent');
   assert.equal(flow.upstreamAuthorization.searchParams.get('ext-mcp-client-name'), 'QA MCP Client');
+  assert.equal(signedPayload(bridgeState, 'state2').client_id, clientId);
   assert.equal(
     flow.upstreamAuthorization.searchParams.get('ext-mcp-client-callback'),
     'http://127.0.0.1:1455/oauth/callback',
@@ -2114,6 +2232,173 @@ test('authorization redirects directly to Auth0 consent through the fixed callba
   assert.equal(callbackLocation.origin, 'http://127.0.0.1:1455');
   assert.ok(flow.bridgeCode.startsWith('code2.'));
   assert.equal(callbackLocation.searchParams.get('state'), 'codex-state');
+  assert.equal(callbackLocation.searchParams.get('iss'), 'https://mcp.test');
+});
+
+test('CIMD authorization and code exchange revalidate expired metadata without client authentication', async () => {
+  installMockFetch();
+  authMetadataOverride = {
+    authorization_response_iss_parameter_supported: true,
+  };
+  const clientId = 'https://client.example/oauth/%7eclient-metadata.json'
+    + '?client%5fid=Codex%2fCLI&v=01';
+  let now = 1_000;
+  let resolutions = 0;
+  let metadataRequests = 0;
+  setOAuthClientMetadataDependenciesForTests({
+    now: () => now,
+    resolve: async () => {
+      resolutions += 1;
+      return [{ address: '93.184.216.34', family: 4 }];
+    },
+    request: async (_url, address) => {
+      assert.deepEqual(address, { address: '93.184.216.34', family: 4 });
+      metadataRequests += 1;
+      return {
+        status: 200,
+        contentType: 'application/json',
+        cacheControl: 'max-age=300',
+        expires: null,
+        date: null,
+        age: null,
+        body: new TextEncoder().encode(JSON.stringify({
+          client_id: clientId,
+          client_name: 'Codex CIMD',
+          redirect_uris: ['http://127.0.0.1/oauth/callback'],
+          token_endpoint_auth_method: 'none',
+        })),
+      };
+    },
+  });
+
+  const flow = await completeAuthorization(clientId);
+  const callbackLocation = new URL(flow.callback.headers.get('location') ?? '');
+  const bridgeState = flow.upstreamAuthorization.searchParams.get('state') ?? '';
+  assert.equal(flow.authorization.status, 302);
+  assert.equal(flow.callback.status, 302);
+  assert.equal(callbackLocation.searchParams.get('iss'), 'https://mcp.test');
+  assert.equal(signedPayload(bridgeState, 'state2').client_id, clientId);
+  assert.equal(metadataRequests, 1);
+
+  const redirectMismatch = await handleAuthorizationRequest(
+    new Request('https://mcp.test/oauth/authorize?' + new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: 'http://127.0.0.1:1456/oauth/other',
+      code_challenge: TEST_CODE_CHALLENGE,
+      code_challenge_method: 'S256',
+    })),
+    readConfig(),
+  );
+  assert.equal(redirectMismatch.status, 400);
+  assert.equal((await redirectMismatch.json()).error, 'invalid_request');
+  assert.equal(redirectMismatch.headers.has('location'), false);
+
+  now += 5 * 60_000 + 1;
+  const token = await handleTokenRequest(
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        code: flow.bridgeCode,
+        redirect_uri: flow.redirectUri,
+        code_verifier: flow.verifier,
+      }),
+    }),
+    readConfig(),
+  );
+  const body = await token.json();
+
+  assert.equal(token.status, 200);
+  assert.match(body.access_token, /^mcp_at_v1\./);
+  assert.equal(tokenCalls[0].authorization, null);
+  assert.equal(resolutions, 2);
+  assert.equal(metadataRequests, 2);
+});
+
+test('issuer-bound callback rejects missing or wrong upstream issuers and sanitizes upstream errors', async () => {
+  installMockFetch();
+  authMetadataOverride = {
+    authorization_response_iss_parameter_supported: true,
+  };
+  const clientId = await registerClient();
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id: clientId,
+    redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
+    state: 'downstream-state',
+    scope: 'firewalls:read',
+    code_challenge: TEST_CODE_CHALLENGE,
+    code_challenge_method: 'S256',
+  });
+  const authorization = await handleAuthorizationRequest(
+    new Request(`https://mcp.test/oauth/authorize?${params}`),
+    readConfig(),
+  );
+  const bridgeState = new URL(authorization.headers.get('location') ?? '')
+    .searchParams.get('state') ?? '';
+
+  for (const callbackParams of [
+    new URLSearchParams({ code: 'auth0-code', state: bridgeState }),
+    new URLSearchParams({
+      code: 'auth0-code',
+      state: bridgeState,
+      iss: 'https://wrong.example/',
+    }),
+  ]) {
+    const callback = await handleOAuthCallbackRequest(
+      new Request(`https://mcp.test/oauth/callback?${callbackParams}`),
+      readConfig(),
+    );
+    const location = new URL(callback.headers.get('location') ?? '');
+    assert.equal(callback.status, 302);
+    assert.equal(location.searchParams.get('error'), 'invalid_request');
+    assert.equal(location.searchParams.get('iss'), 'https://mcp.test');
+    assert.equal(location.searchParams.get('state'), 'downstream-state');
+    assert.equal(location.searchParams.has('code'), false);
+  }
+
+  const upstreamError = await handleOAuthCallbackRequest(
+    new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
+      error: 'access_denied',
+      error_description: 'See https://private.example/?token=secret',
+      error_uri: 'https://private.example/error?secret=value',
+      state: bridgeState,
+      iss: 'https://tenant.example.auth0.com/',
+    })),
+    readConfig(),
+  );
+  const errorLocation = new URL(upstreamError.headers.get('location') ?? '');
+  assert.equal(errorLocation.searchParams.get('error'), 'access_denied');
+  assert.equal(
+    errorLocation.searchParams.get('error_description'),
+    'Upstream authorization was not completed.',
+  );
+  assert.equal(errorLocation.searchParams.has('error_uri'), false);
+  assert.equal(errorLocation.toString().includes('private.example'), false);
+  assert.equal(errorLocation.toString().includes('secret'), false);
+  assert.equal(errorLocation.searchParams.get('iss'), 'https://mcp.test');
+});
+
+test('an unadvertised upstream issuer remains optional but any present mismatch is rejected', async () => {
+  installMockFetch();
+  const clientId = await registerClient();
+  const flow = await completeAuthorization(clientId, { upstreamIssuer: null });
+  assert.ok(flow.bridgeCode.startsWith('code2.'));
+
+  const rejected = await handleOAuthCallbackRequest(
+    new Request('https://mcp.test/oauth/callback?' + new URLSearchParams({
+      code: 'auth0-code',
+      state: flow.upstreamAuthorization.searchParams.get('state') ?? '',
+      iss: 'https://wrong.example/',
+    })),
+    readConfig(),
+  );
+  const location = new URL(rejected.headers.get('location') ?? '');
+  assert.equal(location.searchParams.get('error'), 'invalid_request');
+  assert.equal(location.searchParams.get('iss'), 'https://mcp.test');
 });
 
 test('authorization omits upstream offline access for authorization-code-only clients', async () => {
@@ -2195,8 +2480,10 @@ test('authorization rejects prompt=none instead of reusing shared upstream conse
     readConfig(),
   );
 
-  assert.equal(response.status, 400);
-  assert.equal((await response.json()).error, 'interaction_required');
+  const location = new URL(response.headers.get('location') ?? '');
+  assert.equal(response.status, 302);
+  assert.equal(location.searchParams.get('error'), 'interaction_required');
+  assert.equal(location.searchParams.get('iss'), 'https://mcp.test');
 });
 
 test('authorization bridge applies explicit Auth0 organization to Auth0 consent', async () => {
@@ -2251,11 +2538,15 @@ test('authorization bridge rejects non-Auth0 organization values locally', async
     }).toString()),
     readConfig(),
   );
-  const body = await response.json();
+  const location = new URL(response.headers.get('location') ?? '');
 
-  assert.equal(response.status, 400);
-  assert.equal(body.error, 'invalid_request');
-  assert.match(body.error_description, /organization must be an Auth0 organization id/);
+  assert.equal(response.status, 302);
+  assert.equal(location.searchParams.get('error'), 'invalid_request');
+  assert.match(
+    location.searchParams.get('error_description') ?? '',
+    /organization must be an Auth0 organization id/,
+  );
+  assert.equal(location.searchParams.get('iss'), 'https://mcp.test');
 });
 
 test('authorization bridge rejects invalid single-org deployment override locally', async () => {
@@ -2274,11 +2565,15 @@ test('authorization bridge rejects invalid single-org deployment override locall
     }).toString()),
     readConfig(),
   );
-  const body = await response.json();
+  const location = new URL(response.headers.get('location') ?? '');
 
-  assert.equal(response.status, 503);
-  assert.equal(body.error, 'server_error');
-  assert.match(body.error_description, /MCP_AUTH0_ORGANIZATION must be an Auth0 organization id/);
+  assert.equal(response.status, 302);
+  assert.equal(location.searchParams.get('error'), 'server_error');
+  assert.match(
+    location.searchParams.get('error_description') ?? '',
+    /MCP_AUTH0_ORGANIZATION must be an Auth0 organization id/,
+  );
+  assert.equal(location.searchParams.get('iss'), 'https://mcp.test');
 });
 
 test('authorization bridge rejects callbacks not exactly bound to the dynamic registration', async () => {
@@ -2326,10 +2621,15 @@ test('authorization bridge requires S256 PKCE', async () => {
     readConfig(),
   );
 
-  assert.equal(missingChallenge.status, 400);
-  assert.equal((await missingChallenge.json()).error_description, 'S256 PKCE is required for authorization code flow.');
-  assert.equal(plainChallenge.status, 400);
-  assert.equal((await plainChallenge.json()).error_description, 'S256 PKCE is required for authorization code flow.');
+  for (const response of [missingChallenge, plainChallenge]) {
+    const location = new URL(response.headers.get('location') ?? '');
+    assert.equal(response.status, 302);
+    assert.equal(
+      location.searchParams.get('error_description'),
+      'S256 PKCE is required for authorization code flow.',
+    );
+    assert.equal(location.searchParams.get('iss'), 'https://mcp.test');
+  }
 });
 
 test('token bridge exchanges authorization code with fixed MCP callback and PKCE verifier', async () => {
@@ -2504,6 +2804,38 @@ test('token bridge rejects authorization code exchange without PKCE verifier', a
 
   assert.equal(response.status, 400);
   assert.match((await response.json()).error_description, /requires code, code_verifier, and redirect_uri/);
+  assert.equal(tokenCalls.length, 0);
+});
+
+test('token bridge rejects every form of client-secret authentication', async () => {
+  installMockFetch();
+  const clientId = await registerClient();
+  for (const request of [
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: {
+        authorization: 'Basic Y2xpZW50OnNlY3JldA==',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+      }),
+    }),
+    new Request('https://mcp.test/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        client_id: clientId,
+        client_secret: 'not-supported',
+      }),
+    }),
+  ]) {
+    const response = await handleTokenRequest(request, readConfig());
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).error, 'invalid_client');
+  }
   assert.equal(tokenCalls.length, 0);
 });
 

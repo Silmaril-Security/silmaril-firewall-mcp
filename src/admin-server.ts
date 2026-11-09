@@ -80,6 +80,7 @@ export function createAdminMcpServer(config: ServerConfig): McpServer {
     name: 'silmaril-firewall-admin-mcp',
     version: '0.1.0',
   }, {
+    maxToolInputElements: 8,
     instructions: 'Global Silmaril administrator interface for bounded MCP adoption analytics. Read-only.',
   });
 
