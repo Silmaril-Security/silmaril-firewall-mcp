@@ -468,12 +468,44 @@ test('CIMD rejects redirects, oversized bodies, malformed JSON, and wrong conten
   }
 });
 
+test('CIMD accepts unknown extensions without retaining them in the client projection', async () => {
+  let requests = 0;
+  setOAuthClientMetadataDependenciesForTests({
+    resolve: async () => [PUBLIC_ADDRESS],
+    request: async () => {
+      requests += 1;
+      return response(metadata({
+        software_id: 'codex-client',
+        x_client_metadata: { feature: true },
+      }), {
+        cacheControl: 'max-age=300',
+      });
+    },
+  });
+
+  const client = await resolveOAuthClient(CLIENT_ID, options());
+  const cachedClient = await resolveOAuthClient(CLIENT_ID, options());
+  assert.deepEqual(cachedClient, client);
+  assert.deepEqual(Object.keys(client).sort(), [
+    'clientId',
+    'clientName',
+    'grantTypes',
+    'redirectUris',
+    'responseTypes',
+    'scope',
+    'source',
+  ]);
+  assert.equal(requests, 1);
+});
+
 test('CIMD requires exact identity, public-client auth, code flow, allowed callbacks, and supported scopes', async (t) => {
   const cases: Array<[string, Record<string, unknown>]> = [
     ['identity', { client_id: `${CLIENT_ID}?other=1` }],
     ['client name', { client_name: undefined }],
     ['secret auth', { token_endpoint_auth_method: 'client_secret_basic' }],
-    ['client secret', { client_secret: 'not-allowed' }],
+    ['client secret null', { client_secret: null }],
+    ['client secret empty', { client_secret: '' }],
+    ['client secret expiry zero', { client_secret_expires_at: 0 }],
     ['grant', { grant_types: ['client_credentials'] }],
     ['response', { response_types: ['token'] }],
     ['callback', { redirect_uris: ['https://unapproved.example/callback'] }],

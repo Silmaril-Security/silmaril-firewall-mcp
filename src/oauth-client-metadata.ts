@@ -26,9 +26,7 @@ const ClientMetadataDocumentSchema = z.object({
   response_types: z.array(z.string().min(1)).min(1).max(1).optional(),
   token_endpoint_auth_method: z.string().min(1).optional(),
   scope: z.string().min(1).max(2_048).optional(),
-  client_secret: z.unknown().optional(),
-  client_secret_expires_at: z.unknown().optional(),
-}).passthrough();
+});
 
 type ClientMetadataDocument = z.infer<typeof ClientMetadataDocumentSchema>;
 
@@ -502,7 +500,18 @@ async function fetchClientMetadata(
     }
     let document: ClientMetadataDocument;
     try {
-      document = ClientMetadataDocumentSchema.parse(parseJson(response.body));
+      const rawDocument = parseJson(response.body);
+      if (
+        typeof rawDocument === 'object'
+        && rawDocument !== null
+        && (
+          Object.hasOwn(rawDocument, 'client_secret')
+          || Object.hasOwn(rawDocument, 'client_secret_expires_at')
+        )
+      ) {
+        throw genericMetadataError();
+      }
+      document = ClientMetadataDocumentSchema.parse(rawDocument);
     } catch {
       throw genericMetadataError();
     }
@@ -564,9 +573,7 @@ function validatedCimdClient(
     document.scope ?? options.defaultScopes.join(' '),
   );
   if (
-    document.client_secret !== undefined
-    || document.client_secret_expires_at !== undefined
-    || document.token_endpoint_auth_method !== 'none'
+    document.token_endpoint_auth_method !== 'none'
     || !grantTypes.includes('authorization_code')
     || grantTypes.some((grant) =>
       grant !== 'authorization_code' && grant !== 'refresh_token')
