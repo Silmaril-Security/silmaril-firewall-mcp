@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import type { ClientRequest, IncomingMessage } from 'node:http';
-import { PassThrough } from 'node:stream';
+import {
+  createServer as createHttpsServer,
+  request as nodeHttpsRequest,
+} from 'node:https';
+import type { AddressInfo } from 'node:net';
+import { PassThrough, type Duplex } from 'node:stream';
 import test, { afterEach } from 'node:test';
 import {
   resetOAuthClientMetadataForTests,
@@ -110,6 +116,7 @@ afterEach(() => {
 
 test('CIMD resolution pins the validated public DNS answer and preserves signed DCR', async () => {
   const pinned: ResolvedAddress[] = [];
+  const signedDecodeInputs: string[] = [];
   setOAuthClientMetadataDependenciesForTests({
     resolve: async () => [PUBLIC_ADDRESS],
     request: async (_url, address) => {
@@ -118,11 +125,18 @@ test('CIMD resolution pins the validated public DNS answer and preserves signed 
     },
   });
 
-  const client = await resolveOAuthClient(CLIENT_ID, options());
+  const client = await resolveOAuthClient(CLIENT_ID, {
+    ...options(),
+    decodeSignedClient: (value) => {
+      signedDecodeInputs.push(value);
+      throw new Error('not a signed registration');
+    },
+  });
   assert.equal(client.source, 'cimd');
   assert.equal(client.clientId, CLIENT_ID);
   assert.deepEqual(client.redirectUris, ['http://127.0.0.1/oauth/callback']);
   assert.deepEqual(pinned, [PUBLIC_ADDRESS]);
+  assert.deepEqual(signedDecodeInputs, []);
 
   let resolved = false;
   setOAuthClientMetadataDependenciesForTests({
@@ -133,8 +147,8 @@ test('CIMD resolution pins the validated public DNS answer and preserves signed 
   });
   const signed = await resolveOAuthClient('dcr2.signed.value', {
     ...options(),
-    decodeSignedClient: (clientId) => ({
-      clientId,
+    decodeSignedClient: (value) => ({
+      clientId: value,
       clientName: 'Legacy',
       redirectUris: ['http://127.0.0.1:1455/oauth/callback'],
       grantTypes: ['authorization_code'],
@@ -292,6 +306,150 @@ test('CIMD cache respects no-store and bounded max-age headers', async () => {
   assert.equal(requests, 2);
 });
 
+test('CIMD cache computes HTTP current age for max-age and Expires', async (t) => {
+  const start = Date.parse('2026-11-09T20:00:00.000Z');
+  const cases: Array<{
+    name: string;
+    headers: Partial<PinnedHttpsResponse>;
+    remainingMs: number;
+  }> = [
+    {
+      name: 'max-age uses apparent age from a past Date',
+      headers: {
+        cacheControl: 'max-age=60',
+        date: new Date(start - 30_000).toUTCString(),
+      },
+      remainingMs: 30_000,
+    },
+    {
+      name: 'max-age uses Age when it exceeds apparent age',
+      headers: {
+        cacheControl: 'max-age=60',
+        date: new Date(start - 10_000).toUTCString(),
+        age: '40',
+      },
+      remainingMs: 20_000,
+    },
+    {
+      name: 'Expires uses apparent age from a past Date',
+      headers: {
+        date: new Date(start - 30_000).toUTCString(),
+        expires: new Date(start + 30_000).toUTCString(),
+      },
+      remainingMs: 30_000,
+    },
+    {
+      name: 'Expires uses Age when it exceeds apparent age',
+      headers: {
+        date: new Date(start - 30_000).toUTCString(),
+        expires: new Date(start + 30_000).toUTCString(),
+        age: '50',
+      },
+      remainingMs: 10_000,
+    },
+    {
+      name: 'past Expires is not cached',
+      headers: {
+        date: new Date(start - 60_000).toUTCString(),
+        expires: new Date(start - 1_000).toUTCString(),
+      },
+      remainingMs: 0,
+    },
+    {
+      name: 'freshness is capped at five minutes',
+      headers: {
+        cacheControl: 'max-age=600',
+        date: new Date(start).toUTCString(),
+      },
+      remainingMs: 5 * 60_000,
+    },
+  ];
+
+  for (const fixture of cases) {
+    await t.test(fixture.name, async () => {
+      let now = start;
+      let requests = 0;
+      setOAuthClientMetadataDependenciesForTests({
+        now: () => now,
+        resolve: async () => [PUBLIC_ADDRESS],
+        request: async () => {
+          requests += 1;
+          return response(metadata(), fixture.headers);
+        },
+      });
+
+      await resolveOAuthClient(CLIENT_ID, options());
+      if (fixture.remainingMs === 0) {
+        await resolveOAuthClient(CLIENT_ID, options());
+        assert.equal(requests, 2);
+        return;
+      }
+      now += fixture.remainingMs - 1;
+      await resolveOAuthClient(CLIENT_ID, options());
+      assert.equal(requests, 1);
+      now += 1;
+      await resolveOAuthClient(CLIENT_ID, options());
+      assert.equal(requests, 2);
+    });
+  }
+});
+
+test('CIMD caches metadata only after full client policy validation', async () => {
+  let requests = 0;
+  setOAuthClientMetadataDependenciesForTests({
+    resolve: async () => [PUBLIC_ADDRESS],
+    request: async () => {
+      requests += 1;
+      return response(metadata(requests === 1
+        ? { redirect_uris: ['https://unapproved.example/callback'] }
+        : {}), {
+        cacheControl: 'max-age=300',
+      });
+    },
+  });
+
+  await assert.rejects(
+    resolveOAuthClient(CLIENT_ID, options()),
+    /invalid or unavailable/,
+  );
+  assert.equal((await resolveOAuthClient(CLIENT_ID, options())).source, 'cimd');
+  assert.equal((await resolveOAuthClient(CLIENT_ID, options())).source, 'cimd');
+  assert.equal(requests, 2);
+});
+
+test('CIMD evicts a cached document that fails current client policy', async () => {
+  let requests = 0;
+  setOAuthClientMetadataDependenciesForTests({
+    resolve: async () => [PUBLIC_ADDRESS],
+    request: async () => {
+      requests += 1;
+      return response(metadata({
+        scope: requests === 1
+          ? 'firewalls:read metrics:read'
+          : 'firewalls:read',
+      }), {
+        cacheControl: 'max-age=300',
+      });
+    },
+  });
+
+  await resolveOAuthClient(CLIENT_ID, options());
+  const narrowedOptions = {
+    ...options(),
+    supportedScopes: ['firewalls:read'],
+    defaultScopes: ['firewalls:read'],
+  };
+  await assert.rejects(
+    resolveOAuthClient(CLIENT_ID, narrowedOptions),
+    /invalid or unavailable/,
+  );
+  assert.equal(
+    (await resolveOAuthClient(CLIENT_ID, narrowedOptions)).scope,
+    'firewalls:read',
+  );
+  assert.equal(requests, 2);
+});
+
 test('CIMD rejects redirects, oversized bodies, malformed JSON, and wrong content types', async (t) => {
   const cases: Array<[string, PinnedHttpsResponse]> = [
     ['redirect', response({}, { status: 302 })],
@@ -367,6 +525,114 @@ test('CIMD client IDs require HTTPS without credentials or fragments', async () 
   });
   for (const clientId of invalid) {
     await assert.rejects(resolveOAuthClient(clientId, options()), /invalid or unavailable/);
+  }
+});
+
+test('CIMD real HTTPS deadlines close stalled and trickling sockets', async (t) => {
+  const key = readFileSync(
+    new URL('./fixtures/client-metadata-test-key.pem', import.meta.url),
+  );
+  const cert = readFileSync(
+    new URL('./fixtures/client-metadata-test-cert.pem', import.meta.url),
+  );
+
+  for (const mode of ['stalled headers', 'trickling body'] as const) {
+    await t.test(mode, { timeout: 2_000 }, async () => {
+      const deadline = trackedDeadline();
+      const sockets = new Set<Duplex>();
+      let trickle: ReturnType<typeof setInterval> | undefined;
+      let chunks = 0;
+      let responseCallbacks = 0;
+      let clientRequest: ClientRequest | undefined;
+      let clientRequestClosed = false;
+      const server = createHttpsServer({ key, cert }, (_request, serverResponse) => {
+        if (mode === 'stalled headers') return;
+        serverResponse.writeHead(200, { 'content-type': 'application/json' });
+        serverResponse.flushHeaders();
+        trickle = setInterval(() => {
+          chunks += 1;
+          serverResponse.write(' ');
+        }, 10);
+        serverResponse.once('close', () => {
+          if (trickle) clearInterval(trickle);
+          trickle = undefined;
+        });
+      });
+      server.on('connection', (socket) => {
+        sockets.add(socket);
+        socket.once('close', () => sockets.delete(socket));
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+          server.removeListener('error', reject);
+          resolve();
+        });
+      });
+      t.after(async () => {
+        if (trickle) clearInterval(trickle);
+        for (const socket of sockets) socket.destroy();
+        if (server.listening) {
+          await new Promise<void>((resolve, reject) => {
+            server.close((error) => error ? reject(error) : resolve());
+          });
+        }
+      });
+
+      const port = (server.address() as AddressInfo).port;
+      const clientId = `https://client.example:${port}/oauth/client-metadata.json`;
+      setOAuthClientMetadataDependenciesForTests({
+        ...deadline,
+        resolve: async () => [PUBLIC_ADDRESS],
+        httpsRequest: (url, requestOptions, onResponse) => {
+          assert.equal(typeof requestOptions.lookup, 'function');
+          clientRequest = nodeHttpsRequest(url, {
+            ...requestOptions,
+            ca: cert,
+            lookup: (_hostname, lookupOptions, callback) => {
+              if (typeof lookupOptions === 'object' && lookupOptions.all) {
+                callback(null, [{ address: '127.0.0.1', family: 4 }]);
+                return;
+              }
+              callback(null, '127.0.0.1', 4);
+            },
+          }, (incoming) => {
+            responseCallbacks += 1;
+            onResponse(incoming);
+          });
+          clientRequest.once('close', () => {
+            clientRequestClosed = true;
+          });
+          return clientRequest;
+        },
+      });
+
+      const startedAt = performance.now();
+      await assert.rejects(
+        resolveOAuthClient(clientId, { ...options(), timeoutMs: 100 }),
+        /invalid or unavailable/,
+      );
+      const elapsed = performance.now() - startedAt;
+      for (let attempts = 0; attempts < 100
+        && (!clientRequestClosed || sockets.size > 0); attempts += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const chunksAtClose = chunks;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      assert.ok(elapsed >= 75 && elapsed < 1_000, `deadline elapsed ${elapsed}ms`);
+      assert.equal(clientRequest?.destroyed, true);
+      assert.equal(clientRequestClosed, true);
+      assert.equal(sockets.size, 0);
+      assert.equal(deadline.active.size, 0);
+      if (mode === 'stalled headers') {
+        assert.equal(responseCallbacks, 0);
+      } else {
+        assert.equal(responseCallbacks, 1);
+        assert.ok(chunksAtClose > 1);
+        assert.equal(chunks, chunksAtClose);
+      }
+    });
   }
 });
 

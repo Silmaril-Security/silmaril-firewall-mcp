@@ -192,14 +192,15 @@ function defaultPinnedHttpsRequest(
 
     const cleanup = () => {
       signal.removeEventListener('abort', onAbort);
-      owned.request?.removeListener('error', onRequestError);
       if (response) {
         response.removeListener('data', onData);
         response.removeListener('end', onEnd);
-        response.removeListener('error', onResponseError);
         response.removeListener('aborted', onResponseAborted);
-        response.removeListener('close', onResponseClose);
       }
+    };
+    const onRequestClose = () => {
+      owned.request?.removeListener('error', onRequestError);
+      owned.request?.removeListener('close', onRequestClose);
     };
     const fail = (error: unknown, destroy = true) => {
       if (settled) return;
@@ -216,6 +217,8 @@ function defaultPinnedHttpsRequest(
     const onResponseError = () => fail(genericMetadataError());
     const onResponseAborted = () => fail(genericMetadataError());
     const onResponseClose = () => {
+      response?.removeListener('error', onResponseError);
+      response?.removeListener('close', onResponseClose);
       if (!ended) fail(genericMetadataError());
     };
     const onData = (chunk: Buffer | string) => {
@@ -232,6 +235,8 @@ function defaultPinnedHttpsRequest(
       ended = true;
       settled = true;
       cleanup();
+      response.removeListener('error', onResponseError);
+      response.removeListener('close', onResponseClose);
       resolve({
         status: response.statusCode ?? 0,
         contentType: responseHeader(response, 'content-type'),
@@ -258,6 +263,8 @@ function defaultPinnedHttpsRequest(
       },
     }, (incoming) => {
       response = incoming;
+      response.on('error', onResponseError);
+      response.on('close', onResponseClose);
       const contentLength = Number(response.headers['content-length']);
       if (Number.isFinite(contentLength) && contentLength > CLIENT_METADATA_MAX_BYTES) {
         fail(genericMetadataError());
@@ -265,15 +272,14 @@ function defaultPinnedHttpsRequest(
       }
       response.on('data', onData);
       response.once('end', onEnd);
-      response.once('error', onResponseError);
       response.once('aborted', onResponseAborted);
-      response.once('close', onResponseClose);
     });
+    owned.request.on('error', onRequestError);
+    owned.request.on('close', onRequestClose);
     if (settled) {
       owned.request.destroy();
       return;
     }
-    owned.request.once('error', onRequestError);
     signal.addEventListener('abort', onAbort, { once: true });
     if (signal.aborted) {
       onAbort();
@@ -383,21 +389,33 @@ function cacheTtlMs(response: PinnedHttpsResponse): number {
   const maxAge = directives
     .map((directive) => /^max-age\s*=\s*"?(\d+)"?$/u.exec(directive)?.[1])
     .find((value) => value !== undefined);
+  const responseDate = Date.parse(response.date ?? '');
+  const apparentAgeMs = Number.isFinite(responseDate)
+    ? Math.max(0, dependencies.now() - responseDate)
+    : 0;
+  const ageValue = /^\d+$/u.test(response.age ?? '')
+    ? Number(response.age)
+    : 0;
+  const ageMs = Number.isFinite(ageValue)
+    ? ageValue * 1_000
+    : 0;
+  const currentAgeMs = Math.max(apparentAgeMs, ageMs);
   if (maxAge !== undefined) {
-    const age = Math.max(0, Number.parseInt(response.age ?? '0', 10) || 0);
-    const seconds = Math.max(0, Number.parseInt(maxAge, 10) - age);
-    return Math.min(seconds * 1_000, CLIENT_METADATA_CACHE_TTL_MS);
+    const maxAgeSeconds = Number(maxAge);
+    if (!Number.isFinite(maxAgeSeconds)) return 0;
+    return Math.min(
+      Math.max(0, maxAgeSeconds * 1_000 - currentAgeMs),
+      CLIENT_METADATA_CACHE_TTL_MS,
+    );
   }
   if (response.expires) {
     const expiresAt = Date.parse(response.expires);
     if (Number.isFinite(expiresAt)) {
-      const responseDate = Date.parse(response.date ?? '');
       const baseTime = Number.isFinite(responseDate)
         ? responseDate
         : dependencies.now();
-      const age = Math.max(0, Number.parseInt(response.age ?? '0', 10) || 0);
       return Math.min(
-        Math.max(0, expiresAt - baseTime - age * 1_000),
+        Math.max(0, expiresAt - baseTime - currentAgeMs),
         CLIENT_METADATA_CACHE_TTL_MS,
       );
     }
@@ -433,9 +451,14 @@ function runUntilAbort<T>(
 async function fetchClientMetadata(
   clientId: string,
   requestedTimeoutMs: number,
-): Promise<ClientMetadataDocument> {
+): Promise<{
+  document: ClientMetadataDocument;
+  cacheExpiresAt: number | null;
+}> {
   const cached = metadataCache.get(clientId);
-  if (cached && cached.expiresAt > dependencies.now()) return cached.document;
+  if (cached && cached.expiresAt > dependencies.now()) {
+    return { document: cached.document, cacheExpiresAt: null };
+  }
   if (cached) metadataCache.delete(clientId);
 
   const url = parseClientIdUrl(clientId);
@@ -484,8 +507,10 @@ async function fetchClientMetadata(
       throw genericMetadataError();
     }
     if (document.client_id !== clientId) throw genericMetadataError();
-    cacheDocument(clientId, document, cacheTtlMs(response));
-    return document;
+    return {
+      document,
+      cacheExpiresAt: dependencies.now() + cacheTtlMs(response),
+    };
   } catch {
     throw genericMetadataError();
   } finally {
@@ -570,13 +595,35 @@ export async function resolveOAuthClient(
   options: ResolveOAuthClientOptions,
 ): Promise<OAuthClient> {
   if (!clientId) throw genericMetadataError();
-  try {
-    return options.decodeSignedClient(clientId);
-  } catch {
-    const document = await fetchClientMetadata(clientId, options.timeoutMs);
-    const supportedScopes = typeof options.supportedScopes === 'function'
-      ? await options.supportedScopes()
-      : options.supportedScopes;
-    return validatedCimdClient(clientId, document, options, supportedScopes);
+  if (!clientId.startsWith('https://')) {
+    try {
+      return options.decodeSignedClient(clientId);
+    } catch {
+      throw genericMetadataError();
+    }
   }
+  const fetched = await fetchClientMetadata(clientId, options.timeoutMs);
+  const supportedScopes = typeof options.supportedScopes === 'function'
+    ? await options.supportedScopes()
+    : options.supportedScopes;
+  let client: OAuthClient;
+  try {
+    client = validatedCimdClient(
+      clientId,
+      fetched.document,
+      options,
+      supportedScopes,
+    );
+  } catch {
+    metadataCache.delete(clientId);
+    throw genericMetadataError();
+  }
+  if (fetched.cacheExpiresAt !== null) {
+    cacheDocument(
+      clientId,
+      fetched.document,
+      fetched.cacheExpiresAt - dependencies.now(),
+    );
+  }
+  return client;
 }
