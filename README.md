@@ -27,6 +27,8 @@ For a deeper walkthrough, see [docs/customer-guide.md](docs/customer-guide.md).
 
 Every client uses the same hosted URL, `https://firewall-mcp.silmaril.dev/mcp`, and the same Silmaril login. For ClickUp and Cursor, Silmaril must enable hosted client callbacks on that MCP environment first; the client URL alone does not complete registration.
 
+The authorization server accepts HTTPS Client ID Metadata Documents (CIMD) for clients that support them and retains signed dynamic client registration for existing clients during the 30-day registration lifetime. ClickUp continues to use its documented automatic registration flow. A document must include the exact client ID, a client name, and redirect URIs; omitted grant and response types default to `authorization_code` and `code`, and omitted scopes default to the authorization server's supported scopes. CIMD does not enable client secrets: metadata must describe a public client using S256 PKCE and allowed callbacks. Retrieval has one DNS-through-HTTPS deadline capped at five seconds, pins an entirely public IANA-classified DNS answer set to the TLS connection, rejects redirects, and applies bounded HTTP cache policy. Callback matching is exact except for the RFC 8252 port selected at login when a CIMD document registers an otherwise exact loopback callback without a port. Authorization callbacks include the authorization-server issuer so clients can bind responses to this server.
+
 ### Codex
 
 ```sh

@@ -702,6 +702,7 @@ export function createFirewallMcpServer(
     name: 'silmaril-firewall-mcp',
     version: '0.1.0',
   }, {
+    maxToolInputElements: 128,
     instructions: [
       'Read-only tenant-scoped evidence interface for Silmaril Firewall.',
       'Prefer aggregate, metrics, and search tools before requesting full finding payloads or traces.',

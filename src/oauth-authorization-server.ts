@@ -25,6 +25,11 @@ import {
 import { isAllowedOAuthRedirectUri } from './oauth-redirect-policy';
 import { publicBaseUrl } from './oauth-metadata';
 import { decodeUtf8, readBoundedBody } from './bounded-body';
+import {
+  isOAuthClientRedirectUriAllowed,
+  resolveOAuthClient,
+  type OAuthClient,
+} from './oauth-client-metadata';
 
 const MAX_REGISTRATION_BYTES = 64_000;
 const MAX_TOKEN_REQUEST_BYTES = 64_000;
@@ -47,6 +52,7 @@ const UpstreamAuthorizationServerMetadataSchema = z.object({
   authorization_endpoint: z.string().url(),
   token_endpoint: z.string().url(),
   jwks_uri: z.string().url(),
+  authorization_response_iss_parameter_supported: z.boolean().optional(),
   code_challenge_methods_supported: z.array(z.string()).optional(),
   grant_types_supported: z.array(z.string()).optional(),
   response_types_supported: z.array(z.string()).optional(),
@@ -85,11 +91,15 @@ const BridgeStateSchema = z.object({
   iat: z.number().int().nonnegative(),
   nonce: z.string().uuid(),
   state: z.string().max(1_024).optional(),
+  upstream_issuer: z.string().url().optional(),
+  upstream_iss_required: z.boolean().optional(),
 });
 
 const BridgeCodeSchema = BridgeStateSchema.omit({
   organization: true,
   state: true,
+  upstream_issuer: true,
+  upstream_iss_required: true,
 }).extend({
   code: z.string().min(1),
 });
@@ -151,6 +161,34 @@ function redirect(location: URL | string): Response {
       'cache-control': 'no-store',
     },
   });
+}
+
+function authorizationErrorRedirect(
+  redirectUri: string,
+  state: string | null | undefined,
+  issuer: string,
+  error: string,
+  description: string,
+): Response {
+  const callback = new URL(redirectUri);
+  callback.searchParams.set('error', error);
+  callback.searchParams.set('error_description', description);
+  callback.searchParams.set('iss', issuer);
+  if (state) callback.searchParams.set('state', state);
+  return redirect(callback);
+}
+
+const UPSTREAM_CALLBACK_ERRORS = new Set([
+  'access_denied',
+  'interaction_required',
+  'invalid_request',
+  'login_required',
+  'server_error',
+  'temporarily_unavailable',
+]);
+
+function upstreamCallbackError(value: string | null): string {
+  return value && UPSTREAM_CALLBACK_ERRORS.has(value) ? value : 'server_error';
 }
 
 function authorizationServerMetadataUrl(issuer: string, path: string): URL {
@@ -321,6 +359,33 @@ function decodeRegistration(value: string | null, config: ServerConfig): ClientR
   return registration;
 }
 
+function signedClient(clientId: string, config: ServerConfig): OAuthClient {
+  const registration = decodeRegistration(clientId, config);
+  return {
+    clientId,
+    clientName: registration.client_name,
+    redirectUris: registration.redirect_uris,
+    grantTypes: registration.grant_types,
+    responseTypes: registration.response_types,
+    scope: registration.scope,
+    source: 'dcr',
+  };
+}
+
+function resolveClient(
+  clientId: string | null,
+  supportedScopes: readonly string[] | (() => Promise<readonly string[]>),
+  config: ServerConfig,
+): Promise<OAuthClient> {
+  return resolveOAuthClient(clientId, {
+    allowedRedirectUris: config.oauthAllowedRedirectUris,
+    supportedScopes,
+    defaultScopes: DEFAULT_AUTHORIZATION_SCOPES,
+    timeoutMs: config.upstreamTimeoutMs,
+    decodeSignedClient: (value) => signedClient(value, config),
+  });
+}
+
 function encodeBridgeState(state: BridgeState, config: ServerConfig): string {
   return encodeSigned(state, 'state2', config);
 }
@@ -347,11 +412,6 @@ function validPkceValue(value: string | null): value is string {
 
 function scopes(value: string): string[] {
   return [...new Set(value.split(/\s+/).map((item) => item.trim()).filter(Boolean))];
-}
-
-function appendIfPresent(target: URLSearchParams, source: URLSearchParams, name: string): void {
-  const value = source.get(name);
-  if (value) target.set(name, value);
 }
 
 function resolveAuth0Organization(
@@ -527,6 +587,8 @@ export async function handleAuthorizationServerMetadataRequest(
       authorization_endpoint: new URL('/oauth/authorize', issuer).toString(),
       token_endpoint: new URL('/oauth/token', issuer).toString(),
       registration_endpoint: new URL('/oauth/register', issuer).toString(),
+      client_id_metadata_document_supported: true,
+      authorization_response_iss_parameter_supported: true,
       response_types_supported: valuesOrFallback(
         metadata.response_types_supported?.filter((item) => item === 'code'),
         SUPPORTED_RESPONSE_TYPES,
@@ -564,68 +626,90 @@ export async function handleAuthorizationRequest(
     }, { status: 405, headers: { allow: 'GET' } });
   }
   const url = new URL(req.url);
-  if (url.searchParams.get('prompt') === 'none') {
-    return json({
-      error: 'interaction_required',
-      error_description: 'Silmaril requires explicit consent for every dynamically registered client.',
-    }, { status: 400 });
-  }
-  let registration: ClientRegistration;
+  let upstream: FirewallMcpPublicConfig;
   try {
-    registration = decodeRegistration(url.searchParams.get('client_id'), config);
+    upstream = await getFirewallMcpPublicConfig(config, req.signal);
+  } catch {
+    return json({
+      error: 'server_error',
+      error_description: 'MCP OAuth authorization is unavailable.',
+    }, { status: 503 });
+  }
+  let client: OAuthClient;
+  try {
+    client = await resolveClient(url.searchParams.get('client_id'), upstream.scopes, config);
   } catch {
     return json({
       error: 'invalid_request',
-      error_description: 'client_id is not a valid Silmaril dynamic client registration.',
+      error_description: 'client_id is not valid client metadata.',
     }, { status: 400 });
   }
   const redirectUri = url.searchParams.get('redirect_uri');
-  if (!redirectUri || !registration.redirect_uris.includes(redirectUri)) {
+  if (!redirectUri || !isOAuthClientRedirectUriAllowed(client, redirectUri)) {
     return json({
       error: 'invalid_request',
-      error_description: 'redirect_uri must exactly match this client registration.',
+      error_description: 'redirect_uri must exactly match this client metadata.',
     }, { status: 400 });
   }
+  const localIssuer = authorizationServerIssuer(config);
+  const redirectError = (error: string, description: string) =>
+    authorizationErrorRedirect(
+      redirectUri,
+      url.searchParams.get('state'),
+      localIssuer,
+      error,
+      description,
+    );
+  if (url.searchParams.get('prompt') === 'none') {
+    return redirectError(
+      'interaction_required',
+      'Silmaril requires explicit consent for every client.',
+    );
+  }
   if (url.searchParams.get('response_type') !== 'code') {
-    return json({
-      error: 'unsupported_response_type',
-      error_description: 'Only authorization code flow is supported.',
-    }, { status: 400 });
+    return redirectError('unsupported_response_type', 'Only authorization code flow is supported.');
   }
   const codeChallenge = url.searchParams.get('code_challenge');
   if (!validPkceValue(codeChallenge) || url.searchParams.get('code_challenge_method') !== 'S256') {
-    return json({
-      error: 'invalid_request',
-      error_description: 'S256 PKCE is required for authorization code flow.',
-    }, { status: 400 });
+    return redirectError('invalid_request', 'S256 PKCE is required for authorization code flow.');
   }
   const resource = resourceForRequest(url.searchParams.get('resource'), config);
   if (!resource) {
-    return json({
-      error: 'invalid_target',
-      error_description: 'resource must identify the public or admin Silmaril MCP endpoint.',
-    }, { status: 400 });
+    return redirectError(
+      'invalid_target',
+      'resource must identify the public or admin Silmaril MCP endpoint.',
+    );
   }
   try {
-    const upstream = await getFirewallMcpPublicConfig(config, req.signal);
-    const requestedScopes = scopes(url.searchParams.get('scope') || registration.scope);
-    const registeredScopes = scopes(registration.scope);
+    const requestedScopes = scopes(url.searchParams.get('scope') || client.scope);
+    const registeredScopes = scopes(client.scope);
     const resourceScopes = resource === mcpResource(config, 'admin')
       ? ['firewalls:read']
       : upstream.scopes;
     if (requestedScopes.length === 0 || requestedScopes.some((scope) =>
       !registeredScopes.includes(scope) || !resourceScopes.includes(scope))) {
-      return json({
-        error: 'invalid_scope',
-        error_description: 'Requested scopes must be registered and supported by Silmaril.',
-      }, { status: 400 });
+      return redirectError(
+        'invalid_scope',
+        'Requested scopes must be registered and supported by Silmaril.',
+      );
     }
     const organization = resolveAuth0Organization(url.searchParams.get('organization'), config);
-    if (!organization.ok) return organization.response;
+    if (!organization.ok) {
+      const body = await organization.response.json() as {
+        error?: string;
+        error_description?: string;
+      };
+      return redirectError(
+        body.error ?? 'invalid_request',
+        body.error_description ?? 'The organization selection is invalid.',
+      );
+    }
+    const metadata = await fetchUpstreamAuthorizationServerMetadata(upstream, config, req.signal);
+    const expectedUpstreamIssuer = metadata.issuer ?? upstream.issuer;
     const state: BridgeState = {
       v: ARTIFACT_VERSION,
       redirect_uri: redirectUri,
-      client_id: url.searchParams.get('client_id')!,
+      client_id: client.clientId,
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
       resource,
@@ -634,8 +718,10 @@ export async function handleAuthorizationRequest(
       iat: Date.now(),
       nonce: randomUUID(),
       state: url.searchParams.get('state') ?? undefined,
+      upstream_issuer: expectedUpstreamIssuer,
+      upstream_iss_required:
+        metadata.authorization_response_iss_parameter_supported === true,
     };
-    const metadata = await fetchUpstreamAuthorizationServerMetadata(upstream, config, req.signal);
     const upstreamClientId = upstream.oauth?.client_id;
     if (!upstreamClientId) throw new Error('firewall-ui MCP OAuth client ID is not configured.');
     const authorizationUrl = new URL(metadata.authorization_endpoint);
@@ -644,7 +730,7 @@ export async function handleAuthorizationRequest(
     authorizationUrl.searchParams.set('redirect_uri', bridgeCallbackUrl(config));
     authorizationUrl.searchParams.set('state', encodeBridgeState(state, config));
     const upstreamScopes = scopes(state.scope);
-    if (registration.grant_types.includes('refresh_token')) {
+    if (client.grantTypes.includes('refresh_token')) {
       upstreamScopes.push(UPSTREAM_REFRESH_SCOPE);
     }
     authorizationUrl.searchParams.set('scope', upstreamScopes.join(' '));
@@ -654,7 +740,7 @@ export async function handleAuthorizationRequest(
     authorizationUrl.searchParams.set('prompt', 'consent');
     authorizationUrl.searchParams.set(
       'ext-mcp-client-name',
-      auth0ConsentDisplayValue(registration.client_name),
+      auth0ConsentDisplayValue(client.clientName),
     );
     authorizationUrl.searchParams.set(
       'ext-mcp-client-callback',
@@ -662,11 +748,8 @@ export async function handleAuthorizationRequest(
     );
     if (state.organization) authorizationUrl.searchParams.set('organization', state.organization);
     return redirect(authorizationUrl);
-  } catch (err) {
-    return json({
-      error: 'server_error',
-      error_description: err instanceof Error ? err.message : 'MCP OAuth authorization is unavailable.',
-    }, { status: 503 });
+  } catch {
+    return redirectError('server_error', 'MCP OAuth authorization is unavailable.');
   }
 }
 
@@ -682,10 +765,19 @@ export async function handleOAuthCallbackRequest(
   }
   const url = new URL(req.url);
   let state: BridgeState;
+  let upstream: FirewallMcpPublicConfig | undefined;
+  const loadUpstream = async () => {
+    upstream ??= await getFirewallMcpPublicConfig(config, req.signal);
+    return upstream;
+  };
   try {
     state = decodeBridgeState(url.searchParams.get('state'), config);
-    const registration = decodeRegistration(state.client_id, config);
-    if (!registration.redirect_uris.includes(state.redirect_uri)) {
+    const client = await resolveClient(
+      state.client_id,
+      async () => (await loadUpstream()).scopes,
+      config,
+    );
+    if (!isOAuthClientRedirectUriAllowed(client, state.redirect_uri)) {
       throw new Error('callback mismatch');
     }
   } catch {
@@ -694,26 +786,82 @@ export async function handleOAuthCallbackRequest(
       error_description: 'Invalid OAuth bridge state.',
     }, { status: 400 });
   }
-  const callback = new URL(state.redirect_uri);
-  for (const name of ['error', 'error_description', 'error_uri']) {
-    appendIfPresent(callback.searchParams, url.searchParams, name);
+  const localIssuer = authorizationServerIssuer(config);
+  const upstreamIssuers = url.searchParams.getAll('iss');
+  const upstreamIssuer = upstreamIssuers[0] ?? null;
+  if (
+    upstreamIssuers.length > 1
+    ||
+    (state.upstream_iss_required === true && !upstreamIssuer)
+  ) {
+    return authorizationErrorRedirect(
+      state.redirect_uri,
+      state.state,
+      localIssuer,
+      'invalid_request',
+      'The upstream authorization response issuer was invalid.',
+    );
+  }
+  if (upstreamIssuer !== null) {
+    let expectedUpstreamIssuer = state.upstream_issuer;
+    if (!expectedUpstreamIssuer) {
+      try {
+        expectedUpstreamIssuer = (await loadUpstream()).issuer;
+      } catch {
+        return authorizationErrorRedirect(
+          state.redirect_uri,
+          state.state,
+          localIssuer,
+          'server_error',
+          'Upstream authorization validation is unavailable.',
+        );
+      }
+    }
+    if (upstreamIssuer !== expectedUpstreamIssuer) {
+      return authorizationErrorRedirect(
+        state.redirect_uri,
+        state.state,
+        localIssuer,
+        'invalid_request',
+        'The upstream authorization response issuer was invalid.',
+      );
+    }
+  }
+  const upstreamError = url.searchParams.get('error');
+  if (upstreamError) {
+    return authorizationErrorRedirect(
+      state.redirect_uri,
+      state.state,
+      localIssuer,
+      upstreamCallbackError(upstreamError),
+      'Upstream authorization was not completed.',
+    );
   }
   const code = url.searchParams.get('code');
-  if (code) {
-    callback.searchParams.set('code', encodeBridgeCode({
-      v: ARTIFACT_VERSION,
-      code,
-      redirect_uri: state.redirect_uri,
-      client_id: state.client_id,
-      code_challenge: state.code_challenge,
-      code_challenge_method: 'S256',
-      resource: state.resource,
-      scope: state.scope,
-      iat: Date.now(),
-      nonce: randomUUID(),
-    }, config));
+  if (!code) {
+    return authorizationErrorRedirect(
+      state.redirect_uri,
+      state.state,
+      localIssuer,
+      'server_error',
+      'Upstream authorization did not return a code.',
+    );
   }
+  const callback = new URL(state.redirect_uri);
+  callback.searchParams.set('code', encodeBridgeCode({
+    v: ARTIFACT_VERSION,
+    code,
+    redirect_uri: state.redirect_uri,
+    client_id: state.client_id,
+    code_challenge: state.code_challenge,
+    code_challenge_method: 'S256',
+    resource: state.resource,
+    scope: state.scope,
+    iat: Date.now(),
+    nonce: randomUUID(),
+  }, config));
   if (state.state) callback.searchParams.set('state', state.state);
+  callback.searchParams.set('iss', localIssuer);
   return redirect(callback);
 }
 
@@ -795,18 +943,29 @@ export async function handleTokenRequest(
       error_description: err instanceof Error ? err.message : 'Invalid token request.',
     }, { status: 400 });
   }
+  if (
+    req.headers.has('authorization')
+    || params.has('client_secret')
+    || params.has('client_assertion')
+    || params.has('client_assertion_type')
+  ) {
+    return json({
+      error: 'invalid_client',
+      error_description: 'Only public clients without client authentication are supported.',
+    }, { status: 400 });
+  }
   try {
     const requestedClientId = params.get('client_id');
-    let registration: ClientRegistration;
+    const upstream = await getFirewallMcpPublicConfig(config, req.signal);
+    let client: OAuthClient;
     try {
-      registration = decodeRegistration(requestedClientId, config);
+      client = await resolveClient(requestedClientId, upstream.scopes, config);
     } catch {
       return json({
         error: 'invalid_client',
-        error_description: 'client_id is not a valid Silmaril dynamic client registration.',
+        error_description: 'client_id is not valid client metadata.',
       }, { status: 400 });
     }
-    const upstream = await getFirewallMcpPublicConfig(config, req.signal);
     const metadata = await fetchUpstreamAuthorizationServerMetadata(upstream, config, req.signal);
     const upstreamClientId = upstream.oauth?.client_id;
     if (!upstreamClientId) throw new Error('firewall-ui MCP OAuth client ID is not configured.');
@@ -839,7 +998,9 @@ export async function handleTokenRequest(
       if (
         bridgeCode.client_id !== requestedClientId ||
         bridgeCode.redirect_uri !== redirectUri ||
-        !registration.redirect_uris.includes(redirectUri)
+        !isOAuthClientRedirectUriAllowed(client, redirectUri) ||
+        !client.grantTypes.includes('authorization_code') ||
+        scopes(bridgeCode.scope).some((scope) => !scopes(client.scope).includes(scope))
       ) {
         return json({
           error: 'invalid_grant',
@@ -860,10 +1021,10 @@ export async function handleTokenRequest(
       upstreamParams.set('code_verifier', verifier);
     } else if (grantType === 'refresh_token') {
       const refreshToken = params.get('refresh_token');
-      if (!refreshToken) {
+      if (!refreshToken || !client.grantTypes.includes('refresh_token')) {
         return json({
           error: 'invalid_request',
-          error_description: 'refresh_token grant requires refresh_token.',
+          error_description: 'refresh_token grant is not available for this client.',
         }, { status: 400 });
       }
       let credential;
@@ -877,7 +1038,9 @@ export async function handleTokenRequest(
       }
       resource = credential.resource;
       requestedScopes = scopes(params.get('scope') || credential.scopes.join(' '));
-      if (requestedScopes.some((scope) => !credential.scopes.includes(scope))) {
+      const clientScopes = scopes(client.scope);
+      if (requestedScopes.some((scope) =>
+        !credential.scopes.includes(scope) || !clientScopes.includes(scope))) {
         return json({
           error: 'invalid_scope',
           error_description: 'Refresh requests cannot expand the original grant.',
@@ -930,7 +1093,7 @@ export async function handleTokenRequest(
       requestedClientId!,
       resource,
       requestedScopes,
-      upstreamBody.refresh_token,
+      client.grantTypes.includes('refresh_token') ? upstreamBody.refresh_token : undefined,
       config,
     );
   } catch (err) {
