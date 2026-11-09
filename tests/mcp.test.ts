@@ -975,6 +975,27 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000) {
   assert.equal(predicate(), true);
 }
 
+async function within<T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs = 1_000,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`Timed out waiting for ${label}.`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 const LEGACY_PROTOCOL_VERSION = '2025-11-25';
 const MODERN_PROTOCOL_VERSION = '2026-07-28';
 const PROTOCOL_VERSION_META_KEY = 'io.modelcontextprotocol/protocolVersion';
@@ -1001,6 +1022,7 @@ interface ModernRequestOptions {
   includeNameHeader?: boolean;
   includeClientInfo?: boolean;
   clientCapabilities?: Record<string, unknown>;
+  signal?: AbortSignal;
 }
 
 function rawModernRequest(
@@ -1034,6 +1056,7 @@ function rawModernRequest(
   return new Request(url, {
     method: 'POST',
     headers,
+    signal: options.signal,
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: options.id ?? 1,
@@ -1400,6 +1423,73 @@ test('per-request MCP servers close after JSON completion and stream cancellatio
   assert.ok(streamResponse.body);
   await streamResponse.body.cancel('test cancellation');
   await waitFor(() => streamClosed === 1 && requestAborted);
+});
+
+test('aborting a modern product request cancels its pending firewall-ui tool call', async (t) => {
+  const requestAbort = new AbortController();
+  t.after(() => requestAbort.abort());
+
+  let markUpstreamStarted!: () => void;
+  const upstreamStarted = new Promise<void>((resolve) => {
+    markUpstreamStarted = resolve;
+  });
+  let markUpstreamAborted!: () => void;
+  const upstreamAborted = new Promise<void>((resolve) => {
+    markUpstreamAborted = resolve;
+  });
+  let pendingToolFetchSettled = false;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = requestFrom(input, init);
+    const url = new URL(request.url);
+    assert.equal(url.hostname, 'firewall.test');
+    assert.equal(request.headers.get('authorization'), 'Bearer user-access-token');
+
+    if (url.pathname === '/api/mcp/v1/principal') {
+      return json({ principal: { ...defaultPrincipalAttestation } });
+    }
+    assert.equal(url.pathname, '/api/mcp/v1/firewalls');
+    markUpstreamStarted();
+    return new Promise<Response>((_resolve, reject) => {
+      const onAbort = () => {
+        pendingToolFetchSettled = true;
+        markUpstreamAborted();
+        reject(request.signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      };
+      if (request.signal.aborted) {
+        onAbort();
+      } else {
+        request.signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+  }) as typeof fetch;
+
+  const request = rawModernRequest(
+    'https://mcp.test/mcp',
+    'tools/call',
+    { name: 'list_firewalls', arguments: {} },
+    { name: 'list_firewalls', signal: requestAbort.signal },
+  );
+  request.headers.set('authorization', `Bearer ${mcpAccessToken()}`);
+  request.headers.set('origin', 'https://codex.test');
+
+  const responsePromise = handleMcpRequest(request);
+  await within(upstreamStarted, 'the firewall-ui tool request to start');
+  assert.equal(requestAbort.signal.aborted, false);
+
+  requestAbort.abort(new DOMException('Caller cancelled the MCP request.', 'AbortError'));
+  await within(
+    upstreamAborted,
+    'the firewall-ui tool request signal to abort',
+  );
+  const response = await within(
+    responsePromise,
+    'the product MCP request to settle after cancellation',
+  );
+
+  assert.equal(pendingToolFetchSettled, true);
+  assert.equal(response.status, 499);
+  assert.equal(await response.text(), '');
 });
 
 test('public tool input cap accepts the documented 108-element maximum and exact 128-element boundaries', async () => {
