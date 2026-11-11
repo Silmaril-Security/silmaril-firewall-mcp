@@ -1,9 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
+import { assertCustomerFinding } from './customer-evidence.mjs';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 const accessToken = process.env.CUSTOMER_MCP_ACCESS_TOKEN || (process.env.CUSTOMER_MCP_TOKEN_FILE ? JSON.parse(readFileSync(process.env.CUSTOMER_MCP_TOKEN_FILE, 'utf8')).access_token : undefined);
 assert(accessToken, 'Missing delegated MCP access token');
-for (const name of ['CUSTOMER_MCP_URL', 'CUSTOMER_FIREWALL_ID', 'CUSTOMER_REQUEST_ID']) {
+for (const name of ['CUSTOMER_MCP_URL', 'CUSTOMER_FIREWALL_ID', 'CUSTOMER_REQUEST_ID', 'CUSTOMER_SCENARIO_PATH']) {
   assert(process.env[name], `Missing live customer prerequisite: ${name}`);
 }
 const client = new Client({ name: 'silmaril-customer-tests', version: '0.1.0' });
@@ -35,6 +36,13 @@ try {
   } });
 
   assert(!detail.isError, 'Customer could not inspect the finding');
+  const evidence = detail.structuredContent ?? JSON.parse(detail.content.find(block => block.type === 'text').text);
+  const scenario = JSON.parse(readFileSync(process.env.CUSTOMER_SCENARIO_PATH, 'utf8'));
+  assertCustomerFinding(evidence, {
+    findingId: found.finding_id, firewallId: process.env.CUSTOMER_FIREWALL_ID,
+    requestId: process.env.CUSTOMER_REQUEST_ID,
+    expectedText: scenario.cases.find(item => item.id === 'injected-tool-response')?.text,
+  });
   if (process.env.CUSTOMER_EVIDENCE_OUTPUT) {
     mkdirSync(process.env.CUSTOMER_EVIDENCE_OUTPUT, { recursive: true });
     writeFileSync(`${process.env.CUSTOMER_EVIDENCE_OUTPUT}/mcp.json`, JSON.stringify({ finding_id: found.finding_id, request_id: process.env.CUSTOMER_REQUEST_ID }));

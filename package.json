@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts && node --test scripts/customer-evidence.test.mjs",
     "qa": "npm run lint && npm run typecheck && npm test && npm run test:customer-product && npm run build",
     "test:customer-product": "node --test scripts/customer-product-image-manifest.test.mjs"
   },
