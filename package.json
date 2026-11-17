@@ -17,7 +17,7 @@
     "@modelcontextprotocol/server": "2.4.0",
     "ip-address": "10.7.2",
     "jose": "^6.2.4",
-    "next": "^16.4.1",
+    "next": "^16.4.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "zod": "^4.6.7"
