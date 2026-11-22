@@ -73,6 +73,7 @@ let findingScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
 let conversationScopeTenant = 'acme';
 let conversationScopeKind: 'pilot_tenant' | 'deployment' = 'deployment';
 let totalsScopeTenantByTriage: Record<string, string> = {};
+let totalsScopeKindByTriage: Record<string, 'pilot_tenant' | 'deployment'> = {};
 let principalAttestation: unknown;
 let additionalListItems: Record<string, unknown>[] = [];
 let listInventoryEmpty = false;
@@ -116,6 +117,7 @@ beforeEach(() => {
   conversationScopeTenant = 'acme';
   conversationScopeKind = 'deployment';
   totalsScopeTenantByTriage = {};
+  totalsScopeKindByTriage = {};
   principalAttestation = { ...defaultPrincipalAttestation };
   additionalListItems = [];
   listInventoryEmpty = false;
@@ -878,9 +880,8 @@ function installMockFetch() {
       };
       const count = triage ? counts[triage] ?? 0 : 12;
       const totalsScopeTenant = totalsScopeTenantByTriage[triage ?? 'all'] ?? 'acme';
-      const totalsScopeKind = totalsScopeTenantByTriage[triage ?? 'all']
-        ? 'pilot_tenant'
-        : 'deployment';
+      const totalsScopeKind = totalsScopeKindByTriage[triage ?? 'all']
+        ?? (totalsScopeTenantByTriage[triage ?? 'all'] ? 'pilot_tenant' : 'deployment');
       if (totalsEnvelope === 'nested-total') {
         return json({
           firewall: {
@@ -1936,6 +1937,26 @@ test('pilot responses must attest the authenticated tenant scope', async () => {
     (result.structuredContent as { error: { code: string } }).error.code,
     'upstream_scope_mismatch',
   );
+});
+
+test('deployment-scoped inventory rejects a mismatched tenant and allows the matching tenant', async () => {
+  listScopeKind = 'deployment';
+  listScopeTenant = 'another-tenant';
+  const { client } = await connectedClient();
+
+  const denied = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(denied.isError, true);
+  assert.deepEqual(denied.structuredContent, {
+    error: {
+      status: 502,
+      code: 'upstream_scope_mismatch',
+      message: 'firewall-ui response data scope did not match the authenticated tenant.',
+    },
+  });
+
+  listScopeTenant = 'acme';
+  const allowed = await client.callTool({ name: 'list_firewalls', arguments: {} });
+  assert.equal(allowed.isError, undefined);
 });
 
 test('verified global admins can discover a mixed firewall list and select conversation topics', async () => {
@@ -4077,6 +4098,40 @@ test('group_findings rejects a mismatched constituent scope before aggregation',
   );
 });
 
+test('group_findings rejects a mismatched deployment scope and allows matching deployment scopes', async () => {
+  totalsScopeTenantByTriage.false_positive = 'another-tenant';
+  totalsScopeKindByTriage.false_positive = 'deployment';
+  const { client } = await connectedClient();
+
+  const denied = await client.callTool({
+    name: 'group_findings',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      by: 'triage',
+      range: '1d',
+    },
+  });
+  assert.equal(denied.isError, true);
+  assert.deepEqual(denied.structuredContent, {
+    error: {
+      status: 502,
+      code: 'upstream_scope_mismatch',
+      message: 'firewall-ui response data scope did not match the authenticated tenant.',
+    },
+  });
+
+  totalsScopeTenantByTriage.false_positive = 'acme';
+  const allowed = await client.callTool({
+    name: 'group_findings',
+    arguments: {
+      firewall_id: 'yc-prod-us-west-2',
+      by: 'triage',
+      range: '1d',
+    },
+  });
+  assert.equal(allowed.isError, undefined);
+});
+
 test('global admins still cannot aggregate inconsistent pilot scopes', async () => {
   principalAttestation = { ...(principalAttestation as object), is_admin: true };
   totalsScopeTenantByTriage = {
@@ -4287,6 +4342,36 @@ test('mismatched finding scope is denied and audited as an error', async () => {
   );
   assert.equal(auditCalls.length, 1);
   assert.equal(JSON.parse(auditCalls[0].body ?? '{}').outcome, 'error');
+});
+
+test('sensitive reads reject a mismatched deployment scope and allow the matching tenant', async () => {
+  process.env.MCP_AUDIT_URL = 'https://audit.test/events';
+  findingScopeKind = 'deployment';
+  findingScopeTenant = 'another-tenant';
+  const { client } = await connectedClient();
+  const arguments_ = {
+    firewall_id: 'yc-prod-us-west-2',
+    finding_id: 'qa-find-001',
+    reason: 'Verify deployment tenant scope before returning sensitive evidence.',
+  };
+
+  const denied = await client.callTool({ name: 'get_finding', arguments: arguments_ });
+  assert.equal(denied.isError, true);
+  assert.deepEqual(denied.structuredContent, {
+    error: {
+      status: 502,
+      code: 'upstream_scope_mismatch',
+      message: 'firewall-ui response data scope did not match the authenticated tenant.',
+    },
+  });
+  assert.equal(auditCalls.length, 1);
+  assert.equal(JSON.parse(auditCalls[0].body ?? '{}').outcome, 'error');
+
+  findingScopeTenant = 'acme';
+  const allowed = await client.callTool({ name: 'get_finding', arguments: arguments_ });
+  assert.equal(allowed.isError, undefined);
+  assert.equal(auditCalls.length, 2);
+  assert.equal(JSON.parse(auditCalls[1].body ?? '{}').outcome, 'success');
 });
 
 test('mismatched conversation scope is denied and audited as an error', async () => {
