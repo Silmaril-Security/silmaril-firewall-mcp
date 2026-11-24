@@ -7,7 +7,7 @@ Goal: measure whether agents answer enforcement-readiness and finding-reconstruc
 Ask an agent to answer:
 
 ```txt
-For the YC production firewall, are we enforcement-ready over the last day?
+For the tenant-a-prod-us-west-2 firewall, are we enforcement-ready over the last day?
 Identify the highest-risk finding cluster, cite evidence IDs, explain trace availability,
 and avoid opening full payloads unless the preview packet is insufficient.
 ```
@@ -24,10 +24,10 @@ and avoid opening full payloads unless the preview packet is insufficient.
 8. Optional: `get_finding` with reason
 9. Optional: `get_finding_trace` with reason
 
-For ClickUp suspicious-user review, ask:
+For suspicious-user review, ask:
 
 ```txt
-Show suspicious users for clickup-alpha-us-west-2 over the last 30 days.
+Show suspicious users for tenant-b-alpha-us-west-2 over the last 30 days.
 Prioritize distillation and NSFW abuse, explain bot-farming evidence,
 and tell me which planned signals are unavailable.
 ```

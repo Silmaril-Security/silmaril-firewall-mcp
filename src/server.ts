@@ -313,8 +313,8 @@ function mcpResult(
 ) {
   assertTenantScope(toolName, payload, actor);
   // MCP 2025-06-18 structured content: clients that only read text content
-  // (ClickUp today) must still receive the payload, so the first block is the
-  // serialized JSON with no prose mixed in.
+  // must still receive the payload, so the first block is the serialized JSON
+  // with no prose mixed in.
   // https://modelcontextprotocol.io/specification/2025-06-18/server/tools#structured-content
   return {
     structuredContent: payload as Record<string, unknown>,
