@@ -533,9 +533,9 @@ function installMockFetch() {
       if (listInventoryEmpty) return json({ items: [] });
       return json({
         items: [{
-          firewall_id: 'yc-prod-us-west-2',
+          firewall_id: 'tenant-a-prod-us-west-2',
           data_scope: scopeAttestation(
-            'yc-prod-us-west-2',
+            'tenant-a-prod-us-west-2',
             listScopeTenant,
             listScopeKind,
           ),
@@ -560,8 +560,8 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/default') {
       return json({
-        firewall_id: 'clickup-cascade-alpha',
-        data_scope: scopeAttestation('clickup-cascade-alpha'),
+        firewall_id: 'tenant-b-cascade-alpha',
+        data_scope: scopeAttestation('tenant-b-cascade-alpha'),
         scope: url.searchParams.has('region') ? 'regional' : 'global',
         region: url.searchParams.get('region'),
         regions: ['us-west-2', 'eu-west-1', 'ap-southeast-2', 'ap-southeast-5'],
@@ -570,7 +570,7 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/default/conversations/search') {
       return json({
-        data_scope: scopeAttestation('clickup-cascade-alpha'),
+        data_scope: scopeAttestation('tenant-b-cascade-alpha'),
         results: [{
           handle: 'opaque-conversation-handle',
           relevance: 0.91,
@@ -584,12 +584,12 @@ function installMockFetch() {
 
     if (
       url.pathname === '/api/mcp/v1/firewalls/default/conversation-topics'
-      || url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/conversation-topics'
+      || url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/conversation-topics'
     ) {
       return json({
         data_scope: scopeAttestation(url.pathname.includes('/default/')
-          ? 'clickup-cascade-alpha'
-          : 'yc-prod-us-west-2'),
+          ? 'tenant-b-cascade-alpha'
+          : 'tenant-a-prod-us-west-2'),
         state: 'ready',
         topics: [{
           topic_id: 'topic-1',
@@ -606,7 +606,7 @@ function installMockFetch() {
 
     if (url.pathname === '/api/mcp/v1/firewalls/default/conversation-topics/topic-1') {
       return json({
-        data_scope: scopeAttestation('clickup-cascade-alpha'),
+        data_scope: scopeAttestation('tenant-b-cascade-alpha'),
         topic: {
           topic_id: 'topic-1',
           label: 'Customer Support Workflow Questions',
@@ -623,13 +623,13 @@ function installMockFetch() {
 
     if (
       url.pathname
-      === '/api/mcp/v1/firewalls/clickup-cascade-alpha/conversations/opaque-conversation-handle'
+      === '/api/mcp/v1/firewalls/tenant-b-cascade-alpha/conversations/opaque-conversation-handle'
     ) {
       const request = JSON.parse(upstreamCalls.at(-1)?.body ?? '{}') as { cursor?: string };
       const continued = request.cursor === 'conversation-page-2';
       return json({
         data_scope: scopeAttestation(
-          'clickup-cascade-alpha',
+          'tenant-b-cascade-alpha',
           conversationScopeTenant,
           conversationScopeKind,
         ),
@@ -648,12 +648,12 @@ function installMockFetch() {
 
     if (
       url.pathname === '/api/mcp/v1/firewalls/default/metrics'
-      || url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha-eu-west-1/metrics'
+      || url.pathname === '/api/mcp/v1/firewalls/tenant-b-cascade-alpha-eu-west-1/metrics'
     ) {
       return json({
         firewall: {
-          firewall_id: 'clickup-cascade-alpha',
-          data_scope: scopeAttestation('clickup-cascade-alpha'),
+          firewall_id: 'tenant-b-cascade-alpha',
+          data_scope: scopeAttestation('tenant-b-cascade-alpha'),
           scope: url.searchParams.has('region') ? 'regional' : 'global',
           region: url.searchParams.get('region'),
         },
@@ -669,8 +669,8 @@ function installMockFetch() {
     if (url.pathname === '/api/mcp/v1/firewalls/default/findings/totals') {
       return json({
         firewall: {
-          firewall_id: 'clickup-cascade-alpha',
-          data_scope: scopeAttestation('clickup-cascade-alpha'),
+          firewall_id: 'tenant-b-cascade-alpha',
+          data_scope: scopeAttestation('tenant-b-cascade-alpha'),
         },
         time_window: url.searchParams.get('range') ?? '1d',
         totals: {
@@ -686,8 +686,8 @@ function installMockFetch() {
     if (url.pathname === '/api/mcp/v1/firewalls/default/findings') {
       return json({
         firewall: {
-          firewall_id: 'clickup-cascade-alpha',
-          data_scope: scopeAttestation('clickup-cascade-alpha'),
+          firewall_id: 'tenant-b-cascade-alpha',
+          data_scope: scopeAttestation('tenant-b-cascade-alpha'),
           scope: url.searchParams.has('region') ? 'regional' : 'global',
           region: url.searchParams.get('region'),
         },
@@ -703,43 +703,43 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/qa-find-001') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-b-cascade-alpha/findings/qa-find-001') {
       return json({
         firewall: {
-          firewall_id: 'clickup-cascade-alpha',
+          firewall_id: 'tenant-b-cascade-alpha',
           data_scope: scopeAttestation(
-            'clickup-cascade-alpha',
+            'tenant-b-cascade-alpha',
             findingScopeTenant,
             findingScopeKind,
           ),
         },
         finding: {
-          evidence_id: 'clickup-cascade-alpha:qa-find-001',
+          evidence_id: 'tenant-b-cascade-alpha:qa-find-001',
           text: 'CANARY_SECRET_SHOULD_NOT_APPEAR_IN_LOGS',
         },
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/missing-finding') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-b-cascade-alpha/findings/missing-finding') {
       return json({
         error: { code: 'finding_not_found', message: 'Finding not found.' },
       }, { status: 404 });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2') {
       return json({
-        firewall_id: 'yc-prod-us-west-2',
-        data_scope: scopeAttestation('yc-prod-us-west-2'),
+        firewall_id: 'tenant-a-prod-us-west-2',
+        data_scope: scopeAttestation('tenant-a-prod-us-west-2'),
         runtime: 'sagemaker',
         capabilities: { trace: { state: 'available' } },
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings') {
       return json({
         firewall: {
-          firewall_id: 'yc-prod-us-west-2',
-          data_scope: scopeAttestation('yc-prod-us-west-2'),
+          firewall_id: 'tenant-a-prod-us-west-2',
+          data_scope: scopeAttestation('tenant-a-prod-us-west-2'),
         },
         items: [],
         match_count: 0,
@@ -747,11 +747,11 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/users/suspicious') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/users/suspicious') {
       return json({
         firewall: {
-          firewall_id: 'yc-prod-us-west-2',
-          data_scope: scopeAttestation('yc-prod-us-west-2'),
+          firewall_id: 'tenant-a-prod-us-west-2',
+          data_scope: scopeAttestation('tenant-a-prod-us-west-2'),
         },
         time_window: url.searchParams.get('range') ?? '1d',
         filters: {
@@ -843,9 +843,9 @@ function installMockFetch() {
           },
           reason_codes: ['model_distillation', 'multiple_suspicious_conversations', 'new_user_burst'],
           evidence_handles: [{
-            evidence_id: 'yc-prod-us-west-2:qa-risk-find-001',
+            evidence_id: 'tenant-a-prod-us-west-2:qa-risk-find-001',
             finding_id: 'qa-risk-find-001',
-            firewall_id: 'yc-prod-us-west-2',
+            firewall_id: 'tenant-a-prod-us-west-2',
             finding_score_percent: 91,
           }],
         }],
@@ -870,7 +870,7 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/totals') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/totals') {
       const triage = url.searchParams.get('triage');
       const counts: Record<string, number> = {
         true_positive: 7,
@@ -885,8 +885,8 @@ function installMockFetch() {
       if (totalsEnvelope === 'nested-total') {
         return json({
           firewall: {
-            firewall_id: 'yc-prod-us-west-2',
-            data_scope: scopeAttestation('yc-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
+            firewall_id: 'tenant-a-prod-us-west-2',
+            data_scope: scopeAttestation('tenant-a-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
           },
           time_window: url.searchParams.get('range') ?? '1d',
           totals: {
@@ -900,8 +900,8 @@ function installMockFetch() {
       if (totalsEnvelope === 'top-level-total') {
         return json({
           firewall: {
-            firewall_id: 'yc-prod-us-west-2',
-            data_scope: scopeAttestation('yc-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
+            firewall_id: 'tenant-a-prod-us-west-2',
+            data_scope: scopeAttestation('tenant-a-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
           },
           time_window: url.searchParams.get('range') ?? '1d',
           total: count,
@@ -912,8 +912,8 @@ function installMockFetch() {
       }
       return json({
         firewall: {
-          firewall_id: 'yc-prod-us-west-2',
-          data_scope: scopeAttestation('yc-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
+          firewall_id: 'tenant-a-prod-us-west-2',
+          data_scope: scopeAttestation('tenant-a-prod-us-west-2', totalsScopeTenant, totalsScopeKind),
         },
         time_window: url.searchParams.get('range') ?? '1d',
         totals: {
@@ -926,11 +926,11 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/group') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/group') {
       return json({
         firewall: {
-          firewall_id: 'yc-prod-us-west-2',
-          data_scope: scopeAttestation('yc-prod-us-west-2'),
+          firewall_id: 'tenant-a-prod-us-west-2',
+          data_scope: scopeAttestation('tenant-a-prod-us-west-2'),
         },
         by: url.searchParams.get('by'),
         items: [],
@@ -938,24 +938,24 @@ function installMockFetch() {
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/qa-find-001') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/qa-find-001') {
       return json({
         firewall: {
-          firewall_id: 'yc-prod-us-west-2',
+          firewall_id: 'tenant-a-prod-us-west-2',
           data_scope: scopeAttestation(
-            'yc-prod-us-west-2',
+            'tenant-a-prod-us-west-2',
             findingScopeTenant,
             findingScopeKind,
           ),
         },
         finding: {
-          evidence_id: 'yc-prod-us-west-2:qa-find-001',
+          evidence_id: 'tenant-a-prod-us-west-2:qa-find-001',
           text: 'CANARY_SECRET_SHOULD_NOT_APPEAR_IN_LOGS',
         },
       });
     }
 
-    if (url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/missing-finding') {
+    if (url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/missing-finding') {
       return json({ error: { code: 'finding_not_found', message: 'Finding not found.' } }, { status: 404 });
     }
 
@@ -1166,7 +1166,7 @@ test('initializes, lists tools, calls list_firewalls, and forwards bearer auth',
 
   const result = await client.callTool({ name: 'list_firewalls', arguments: {} });
   assert.equal(result.isError, undefined);
-  assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'yc-prod-us-west-2');
+  assert.equal((result.structuredContent as { items: Array<{ firewall_id: string }> }).items[0].firewall_id, 'tenant-a-prod-us-west-2');
   assert.equal(upstreamCalls.at(-1)?.authorization, 'Bearer user-access-token');
 });
 
@@ -1229,7 +1229,7 @@ test('raw 2026 requests discover and call the public and admin MCP surfaces', as
     };
   };
   assert.equal(call.result.resultType, 'complete');
-  assert.equal(call.result.structuredContent.items[0].firewall_id, 'yc-prod-us-west-2');
+  assert.equal(call.result.structuredContent.items[0].firewall_id, 'tenant-a-prod-us-west-2');
   assert.equal(call.result._meta[SERVER_INFO_META_KEY]?.name, 'silmaril-firewall-mcp');
 
   const adminResponse = await rawModernHostRequest(
@@ -1614,7 +1614,7 @@ test('text-only clients recover full tool payloads from the first content block'
   const listed = await client.callTool({ name: 'list_firewalls', arguments: {} });
   assert.equal(listed.isError, undefined);
   const inventory = textOnlyPayload(listed) as { items: Array<{ firewall_id: string }> };
-  assert.equal(inventory.items[0].firewall_id, 'yc-prod-us-west-2');
+  assert.equal(inventory.items[0].firewall_id, 'tenant-a-prod-us-west-2');
 
   const totals = await client.callTool({ name: 'get_finding_totals', arguments: { range: '1d' } });
   assert.equal(totals.isError, undefined);
@@ -1628,7 +1628,7 @@ test('text-only clients recover full tool payloads from the first content block'
     firewall: { firewall_id: string };
     coverage: { unavailable_regions: Array<{ region: string }> };
   };
-  assert.equal(metricsBody.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(metricsBody.firewall.firewall_id, 'tenant-b-cascade-alpha');
   assert.equal(metricsBody.coverage.unavailable_regions[0].region, 'ap-southeast-5');
 });
 
@@ -1655,7 +1655,7 @@ test('tenant-scope failures keep unauthorized firewall data out of the text cont
     blocks[0].text,
     'firewall-ui 502 upstream_scope_mismatch: firewall-ui response data scope did not match the authenticated tenant.',
   );
-  assert.equal(blocks[0].text.includes('yc-prod-us-west-2'), false);
+  assert.equal(blocks[0].text.includes('tenant-a-prod-us-west-2'), false);
   assert.equal(blocks[0].text.includes('another-pilot'), false);
 });
 
@@ -1768,7 +1768,7 @@ test('sensitive reason validation matches the upstream contract at the MCP tool 
     const result = await client.callTool({
       name: 'get_conversation',
       arguments: {
-        firewall_id: 'clickup-cascade-alpha',
+        firewall_id: 'tenant-b-cascade-alpha',
         handle: 'opaque-conversation-handle',
         reason,
       },
@@ -1790,7 +1790,7 @@ test('sensitive reason validation matches the upstream contract at the MCP tool 
     const result = await client.callTool({
       name: 'get_conversation',
       arguments: {
-        firewall_id: 'clickup-cascade-alpha',
+        firewall_id: 'tenant-b-cascade-alpha',
         handle: 'opaque-conversation-handle',
         reason,
       },
@@ -1888,7 +1888,7 @@ test('omitted firewall selection resolves globally and preserves partial coverag
     firewall: { firewall_id: string; scope: string; region: string | null };
     coverage: { complete: boolean; unavailable_regions: Array<{ region: string }> };
   };
-  assert.equal(body.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(body.firewall.firewall_id, 'tenant-b-cascade-alpha');
   assert.equal(body.firewall.scope, 'global');
   assert.equal(body.firewall.region, null);
   assert.equal(body.coverage.complete, false);
@@ -1904,7 +1904,7 @@ test('region selection and physical IDs are forwarded while canonical metadata i
   const result = await client.callTool({
     name: 'get_metrics',
     arguments: {
-      firewall_id: 'clickup-cascade-alpha-eu-west-1',
+      firewall_id: 'tenant-b-cascade-alpha-eu-west-1',
       region: 'eu-west-1',
       range: '1h',
     },
@@ -1914,13 +1914,13 @@ test('region selection and physical IDs are forwarded while canonical metadata i
   const body = result.structuredContent as {
     firewall: { firewall_id: string; scope: string; region: string };
   };
-  assert.equal(body.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(body.firewall.firewall_id, 'tenant-b-cascade-alpha');
   assert.equal(body.firewall.scope, 'regional');
   assert.equal(body.firewall.region, 'eu-west-1');
   const url = new URL(upstreamCalls.at(-1)?.url ?? '');
   assert.equal(
     url.pathname,
-    '/api/mcp/v1/firewalls/clickup-cascade-alpha-eu-west-1/metrics',
+    '/api/mcp/v1/firewalls/tenant-b-cascade-alpha-eu-west-1/metrics',
   );
   assert.equal(url.searchParams.get('region'), 'eu-west-1');
   assert.equal(url.searchParams.get('range'), '1h');
@@ -1977,7 +1977,7 @@ test('verified global admins can discover a mixed firewall list and select conve
   });
   assert.equal(topics.isError, undefined);
   assert.equal((topics.structuredContent as { data_scope: { firewall_id: string } }).data_scope.firewall_id, items[0].firewall_id);
-  assert.match(upstreamCalls.at(-1)?.url ?? '', /\/firewalls\/yc-prod-us-west-2\/conversation-topics/);
+  assert.match(upstreamCalls.at(-1)?.url ?? '', /\/firewalls\/tenant-a-prod-us-west-2\/conversation-topics/);
 });
 
 test('admin authority is refreshed for each evidence request', async () => {
@@ -2068,7 +2068,7 @@ test('regional findings preserve the source-attribution rollout boundary', async
       };
     };
   };
-  assert.equal(body.firewall.firewall_id, 'clickup-cascade-alpha');
+  assert.equal(body.firewall.firewall_id, 'tenant-b-cascade-alpha');
   assert.equal(body.firewall.region, 'ap-southeast-2');
   assert.equal(
     body.coverage.regional_attribution.historical_unattributed_findings,
@@ -2959,8 +2959,8 @@ test('authorization bridge applies explicit Auth0 organization to Auth0 consent'
   const flow = await completeAuthorization(clientId);
   assert.equal(flow.upstreamAuthorization.searchParams.get('organization'), 'org_silmaril');
 
-  const explicit = await completeAuthorization(clientId, { organization: 'org_clickup' });
-  assert.equal(explicit.upstreamAuthorization.searchParams.get('organization'), 'org_clickup');
+  const explicit = await completeAuthorization(clientId, { organization: 'org_tenant_b' });
+  assert.equal(explicit.upstreamAuthorization.searchParams.get('organization'), 'org_tenant_b');
 });
 
 test('authorization bridge rejects forged callback state', async () => {
@@ -2998,7 +2998,7 @@ test('authorization bridge rejects non-Auth0 organization values locally', async
       client_id: clientId,
       redirect_uri: 'http://127.0.0.1:1455/oauth/callback',
       state: 'codex-state',
-      organization: 'clickup',
+      organization: 'tenant-b',
       code_challenge: TEST_CODE_CHALLENGE,
       code_challenge_method: 'S256',
     }).toString()),
@@ -3017,7 +3017,7 @@ test('authorization bridge rejects non-Auth0 organization values locally', async
 
 test('authorization bridge rejects invalid single-org deployment override locally', async () => {
   installMockFetch();
-  process.env.MCP_AUTH0_ORGANIZATION = 'clickup';
+  process.env.MCP_AUTH0_ORGANIZATION = 'tenant-b';
   const clientId = await registerClient();
 
   const response = await handleAuthorizationRequest(
@@ -3850,7 +3850,7 @@ test('finding tools forward owner, triage, and metadata filters to firewall-ui e
   const totals = await client.callTool({
     name: 'get_finding_totals',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       range: '1d',
       triage: 'false_positive',
       owner: ' Payments-Agent ',
@@ -3860,7 +3860,7 @@ test('finding tools forward owner, triage, and metadata filters to firewall-ui e
   assert.equal(totals.isError, undefined);
   assert.equal((totals.structuredContent as { totals: { blocked: number } }).totals.blocked, 3);
   let lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
-  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/totals');
+  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/totals');
   assert.equal(lastUrl.searchParams.get('triage'), 'false_positive');
   assert.equal(lastUrl.searchParams.get('apiKeyOwner'), 'Payments-Agent');
   assert.equal(lastUrl.searchParams.get('apiKeyOwnerMode'), 'trusted_alias');
@@ -3869,7 +3869,7 @@ test('finding tools forward owner, triage, and metadata filters to firewall-ui e
   const findings = await client.callTool({
     name: 'list_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       triage: 'true_positive',
       owner: 'payments-agent',
       metadata,
@@ -3878,7 +3878,7 @@ test('finding tools forward owner, triage, and metadata filters to firewall-ui e
   });
   assert.equal(findings.isError, undefined);
   lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
-  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings');
+  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings');
   assert.equal(lastUrl.searchParams.get('triage'), 'true_positive');
   assert.equal(lastUrl.searchParams.get('apiKeyOwner'), 'payments-agent');
   assert.equal(lastUrl.searchParams.get('apiKeyOwnerMode'), 'trusted_alias');
@@ -3887,7 +3887,7 @@ test('finding tools forward owner, triage, and metadata filters to firewall-ui e
   const grouped = await client.callTool({
     name: 'group_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       by: 'hook',
       triage: 'false_positive',
       owner: 'payments-agent',
@@ -3896,7 +3896,7 @@ test('finding tools forward owner, triage, and metadata filters to firewall-ui e
   });
   assert.equal(grouped.isError, undefined);
   lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
-  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/group');
+  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/group');
   assert.equal(lastUrl.searchParams.get('by'), 'hook');
   assert.equal(lastUrl.searchParams.get('triage'), 'false_positive');
   assert.equal(lastUrl.searchParams.get('apiKeyOwner'), 'payments-agent');
@@ -3911,7 +3911,7 @@ test('finding owner selector is one non-empty string and is not exposed elsewher
     const result = await client.callTool({
       name: 'list_findings',
       arguments: {
-        firewall_id: 'yc-prod-us-west-2',
+        firewall_id: 'tenant-a-prod-us-west-2',
         owner,
       },
     });
@@ -3938,7 +3938,7 @@ test('list_suspicious_users forwards category filters and preserves correlation 
   const result = await client.callTool({
     name: 'list_suspicious_users',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       range: '30d',
       categories: ['model_distillation', 'nsfw_content_abuse'],
       minFindings: 2,
@@ -3995,13 +3995,13 @@ test('list_suspicious_users forwards category filters and preserves correlation 
   assert.equal(body.users[0].bot_farming.signals.shared_ja4_fingerprint.level, 'unavailable');
   assert.ok(body.users[0].bot_farming.score_percent < body.users[0].bot_farming.max_possible_score_percent);
   assert.equal(body.diagnostics.missing_identity_counts.ja4, 2);
-  assert.equal(body.users[0].evidence_handles[0].evidence_id, 'yc-prod-us-west-2:qa-risk-find-001');
+  assert.equal(body.users[0].evidence_handles[0].evidence_id, 'tenant-a-prod-us-west-2:qa-risk-find-001');
   assert.equal(body.users[0].evidence_handles[0].score, undefined);
   assert.equal(body.users[0].evidence_handles[0].finding_score_percent, 91);
   assert.deepEqual(body.received_category, ['model_distillation', 'nsfw_content_abuse']);
 
   const lastUrl = new URL(upstreamCalls.at(-1)?.url ?? '');
-  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/users/suspicious');
+  assert.equal(lastUrl.pathname, '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/users/suspicious');
   assert.deepEqual(lastUrl.searchParams.getAll('category'), ['model_distillation', 'nsfw_content_abuse']);
   assert.equal(lastUrl.searchParams.get('range'), '30d');
   assert.equal(lastUrl.searchParams.get('minFindings'), '2');
@@ -4018,7 +4018,7 @@ test('list_suspicious_users rejects empty category arrays', async () => {
   const result = await client.callTool({
     name: 'list_suspicious_users',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       categories: [],
     },
   });
@@ -4036,7 +4036,7 @@ test('group_findings can aggregate exact counts by triage verdict', async () => 
   const result = await client.callTool({
     name: 'group_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       by: 'triage',
       range: '1d',
       owner: 'payments-agent',
@@ -4065,7 +4065,7 @@ test('group_findings can aggregate exact counts by triage verdict', async () => 
 
   const triageQueries = upstreamCalls
     .map((call) => new URL(call.url))
-    .filter((url) => url.pathname === '/api/mcp/v1/firewalls/yc-prod-us-west-2/findings/totals')
+    .filter((url) => url.pathname === '/api/mcp/v1/firewalls/tenant-a-prod-us-west-2/findings/totals')
     .map((url) => ({
       triage: url.searchParams.get('triage'),
       owner: url.searchParams.get('apiKeyOwner'),
@@ -4085,7 +4085,7 @@ test('group_findings rejects a mismatched constituent scope before aggregation',
   const result = await client.callTool({
     name: 'group_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       by: 'triage',
       range: '1d',
     },
@@ -4106,7 +4106,7 @@ test('group_findings rejects a mismatched deployment scope and allows matching d
   const denied = await client.callTool({
     name: 'group_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       by: 'triage',
       range: '1d',
     },
@@ -4124,7 +4124,7 @@ test('group_findings rejects a mismatched deployment scope and allows matching d
   const allowed = await client.callTool({
     name: 'group_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       by: 'triage',
       range: '1d',
     },
@@ -4139,7 +4139,7 @@ test('global admins still cannot aggregate inconsistent pilot scopes', async () 
   };
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'group_findings', arguments: { firewall_id: 'yc-prod-us-west-2', by: 'triage' },
+    name: 'group_findings', arguments: { firewall_id: 'tenant-a-prod-us-west-2', by: 'triage' },
   });
   assert.equal(result.isError, true);
   assert.equal((result.structuredContent as { error: { code: string } }).error.code, 'upstream_scope_mismatch');
@@ -4154,7 +4154,7 @@ test('activity emits once per logical tool call with a minimal fail-open payload
   const success = await client.callTool({
     name: 'group_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       by: 'triage',
       range: '1d',
       owner: 'OWNER_CANARY_SECRET',
@@ -4172,7 +4172,7 @@ test('activity emits once per logical tool call with a minimal fail-open payload
     tool_name: 'group_findings',
     outcome: 'success',
   });
-  assert.doesNotMatch(activityCalls[0].body ?? '', /CANARY_SECRET|OWNER_CANARY_SECRET|yc-prod|metadata|arguments/);
+  assert.doesNotMatch(activityCalls[0].body ?? '', /CANARY_SECRET|OWNER_CANARY_SECRET|tenant-a-prod|metadata|arguments/);
 
   deferredTasks = [];
   const failure = await client.callTool({
@@ -4201,7 +4201,7 @@ test('activity excludes input validation failures', async () => {
 
   const result = await client.callTool({
     name: 'list_suspicious_users',
-    arguments: { firewall_id: 'yc-prod-us-west-2', categories: [] },
+    arguments: { firewall_id: 'tenant-a-prod-us-west-2', categories: [] },
   });
   assert.equal(result.isError, true);
   await Promise.all(deferredTasks);
@@ -4216,7 +4216,7 @@ test('group_findings uses total fields when triage totals omit blocked', async (
     const result = await client.callTool({
       name: 'group_findings',
       arguments: {
-        firewall_id: 'yc-prod-us-west-2',
+        firewall_id: 'tenant-a-prod-us-west-2',
         by: 'triage',
         range: '1d',
       },
@@ -4246,7 +4246,7 @@ test('group_findings reports triaged_count for explicit triaged filter', async (
   const result = await client.callTool({
     name: 'group_findings',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       by: 'triage',
       triage: 'triaged',
       range: '1d',
@@ -4292,7 +4292,7 @@ test('detail access audits metadata only and does not log payload text', async (
     const result = await client.callTool({
       name: 'get_finding',
       arguments: {
-        firewall_id: 'yc-prod-us-west-2',
+        firewall_id: 'tenant-a-prod-us-west-2',
         finding_id: 'qa-find-001',
         reason: 'Investigating alert evidence citation.',
       },
@@ -4309,7 +4309,7 @@ test('detail access audits metadata only and does not log payload text', async (
     assert.equal(audit.tenant, 'acme');
     assert.equal(audit.organization, 'org_acme');
     assert.equal(audit.oauth_client_id, 'dcr-test-client');
-    assert.equal(audit.target_firewall_id, 'yc-prod-us-west-2');
+    assert.equal(audit.target_firewall_id, 'tenant-a-prod-us-west-2');
     assert.equal(audit.target_finding_id, 'qa-find-001');
     assert.equal(audit.outcome, 'success');
     assert.equal(audit.deployment_version, '321c91e-test');
@@ -4329,7 +4329,7 @@ test('mismatched finding scope is denied and audited as an error', async () => {
   const result = await client.callTool({
     name: 'get_finding',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       finding_id: 'qa-find-001',
       reason: 'Verify tenant scope before recording successful access.',
     },
@@ -4350,7 +4350,7 @@ test('sensitive reads reject a mismatched deployment scope and allow the matchin
   findingScopeTenant = 'another-tenant';
   const { client } = await connectedClient();
   const arguments_ = {
-    firewall_id: 'yc-prod-us-west-2',
+    firewall_id: 'tenant-a-prod-us-west-2',
     finding_id: 'qa-find-001',
     reason: 'Verify deployment tenant scope before returning sensitive evidence.',
   };
@@ -4403,14 +4403,14 @@ test('default sensitive reads audit the canonical resolved firewall', async () =
     name: 'get_finding',
     arguments: {
       finding_id: 'qa-find-001',
-      reason: 'Investigating default-selected ClickUp evidence.',
+      reason: 'Investigating default-selected tenant evidence.',
     },
   });
 
   assert.equal(result.isError, undefined);
   assert.equal(auditCalls.length, 1);
   const audit = JSON.parse(auditCalls[0].body ?? '{}');
-  assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
+  assert.equal(audit.target_firewall_id, 'tenant-b-cascade-alpha');
   assert.equal(audit.target_finding_id, 'qa-find-001');
   assert.equal(audit.outcome, 'success');
   assert.deepEqual(
@@ -4419,7 +4419,7 @@ test('default sensitive reads audit the canonical resolved firewall', async () =
       .filter((path) => path.startsWith('/api/mcp/v1/firewalls/')),
     [
       '/api/mcp/v1/firewalls/default',
-      '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/qa-find-001',
+      '/api/mcp/v1/firewalls/tenant-b-cascade-alpha/findings/qa-find-001',
     ],
   );
 });
@@ -4430,7 +4430,7 @@ test('failed detail reads produce an attributed error audit event', async () => 
   const result = await client.callTool({
     name: 'get_finding',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       finding_id: 'missing-finding',
       reason: 'Investigating a stale finding handle.',
     },
@@ -4462,7 +4462,7 @@ test('failed default sensitive reads audit the canonical resolved firewall', asy
   assert.equal(result.isError, true);
   assert.equal(auditCalls.length, 1);
   const audit = JSON.parse(auditCalls[0].body ?? '{}');
-  assert.equal(audit.target_firewall_id, 'clickup-cascade-alpha');
+  assert.equal(audit.target_firewall_id, 'tenant-b-cascade-alpha');
   assert.equal(audit.target_finding_id, 'missing-finding');
   assert.equal(audit.outcome, 'error');
   assert.deepEqual(
@@ -4471,7 +4471,7 @@ test('failed default sensitive reads audit the canonical resolved firewall', asy
       .filter((path) => path.startsWith('/api/mcp/v1/firewalls/')),
     [
       '/api/mcp/v1/firewalls/default',
-      '/api/mcp/v1/firewalls/clickup-cascade-alpha/findings/missing-finding',
+      '/api/mcp/v1/firewalls/tenant-b-cascade-alpha/findings/missing-finding',
     ],
   );
 });
@@ -4481,7 +4481,7 @@ test('sensitive evidence is withheld when durable audit is absent or rejects the
   const absentResult = await absent.client.callTool({
     name: 'get_finding',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       finding_id: 'qa-find-001',
       reason: 'Verify audit fail closed behavior.',
     },
@@ -4503,7 +4503,7 @@ test('sensitive evidence is withheld when durable audit is absent or rejects the
   const rejectedResult = await rejected.client.callTool({
     name: 'get_finding',
     arguments: {
-      firewall_id: 'yc-prod-us-west-2',
+      firewall_id: 'tenant-a-prod-us-west-2',
       finding_id: 'qa-find-001',
       reason: 'Verify rejected audit behavior.',
     },

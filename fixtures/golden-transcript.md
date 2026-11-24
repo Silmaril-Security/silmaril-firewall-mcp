@@ -29,24 +29,24 @@ This session does not call the conversation tools.
 
 client -> tools/call list_firewalls {}
 server -> structuredContent.items[0]:
-  firewall_id: yc-prod-us-west-2
+  firewall_id: tenant-a-prod-us-west-2
   runtime: sagemaker
   capabilities.trace.state: available
   generated_at: 2026-06-27T00:00:00.000Z
 
 client -> tools/call get_investigation_packet {
-  firewall_id: "yc-prod-us-west-2",
+  firewall_id: "tenant-a-prod-us-west-2",
   finding_id: "qa-find-001"
 }
 server -> structuredContent:
-  finding.evidence_id: yc-prod-us-west-2:qa-find-001
+  finding.evidence_id: tenant-a-prod-us-west-2:qa-find-001
   finding.text_preview: <redacted preview>
   trace_capability.state: available
   detail_minimization.payload_opened: false
   detail_minimization.trace_opened: false
 
 client -> tools/call list_suspicious_users {
-  firewall_id: "clickup-alpha-us-west-2",
+  firewall_id: "tenant-b-alpha-us-west-2",
   range: "30d",
   categories: ["model_distillation", "nsfw_content_abuse"],
   limit: 10
@@ -68,13 +68,13 @@ server -> structuredContent.users[0]:
   evidence_handles[0].finding_score_percent: <0-100 finding score>
 
 client -> tools/call get_finding {
-  firewall_id: "yc-prod-us-west-2",
+  firewall_id: "tenant-a-prod-us-west-2",
   finding_id: "qa-find-001",
   reason: "Preview evidence is insufficient for incident report citation."
 }
 server -> structuredContent:
   access.reason: Preview evidence is insufficient for incident report citation.
-  finding.evidence_id: yc-prod-us-west-2:qa-find-001
+  finding.evidence_id: tenant-a-prod-us-west-2:qa-find-001
   finding.text: <full authorized payload>
 ```
 
@@ -82,7 +82,7 @@ For self-hosted tenants without multi-event trace source:
 
 ```txt
 client -> tools/call get_finding_trace {
-  firewall_id: "yc-litellm-alpha-us-west-2",
+  firewall_id: "tenant-c-selfhosted-alpha-us-west-2",
   finding_id: "qa-find-001",
   reason: "Need to confirm trace availability for readiness review."
 }
