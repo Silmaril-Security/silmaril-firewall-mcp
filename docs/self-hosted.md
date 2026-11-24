@@ -29,7 +29,7 @@ apply customer infrastructure.
 
 The customer-platform pipeline owns the source ECR publishing role. Configure
 GitHub environment `customer-product-release` with main-only deployment branches
-and these non-secret repository variables:
+and these environment secrets:
 
 - `AWS_CUSTOMER_PRODUCT_MCP_PUBLISH_ROLE_ARN`: the pipeline stack's MCP publisher output.
 - `AWS_CUSTOMER_PRODUCT_MCP_REPOSITORY`: the exact source application ECR repository.
