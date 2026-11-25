@@ -41,8 +41,13 @@ image's digest, linux/amd64 platform, source/mode labels and container startup;
 it never overwrites a tag. Lookup errors other than ImageNotFound fail closed.
 
 The `customer-mcp-image-<commit>` workflow artifact contains `mcp-image.json`:
-`{uri, sha256, commit}`. Copy that exact object into a new Firewall product
-definition's `mcp_image` after independently verifying the publication receipt.
+`{sha256, commit}`. This repository is public, so the receipt never names the
+registry account or host. In a new Firewall product definition, set `mcp_image`
+to that `sha256` and `commit` plus
+`uri: <source_account_id>.dkr.ecr.<region>.amazonaws.com/<ui_repository_name>@sha256:<sha256>`,
+taking the three placeholders from the Firewall customer product release
+configuration, after independently verifying the publication receipt. Firewall
+rejects any URI outside its configured account, region, and repository.
 Firewall then qualifies, signs, and distributes the complete customer product.
 Do not manufacture a release pin from a PR build or treat publication as customer
 activation.

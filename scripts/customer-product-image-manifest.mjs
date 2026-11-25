@@ -7,7 +7,7 @@ export function publicationConfig(repository, commit) {
     throw new Error('An exact us-west-2 ECR repository is required');
   }
   if (typeof commit !== 'string' || commit.length !== 40 || !/^[a-f0-9]{40}$/.test(commit)) throw new Error('A full source commit is required');
-  return { repository, commit, tag: `mcp-${commit}`, repositoryName: repository.split('/').slice(1).join('/') };
+  return { repository, commit, tag: `mcp-${commit}` };
 }
 
 export function imageReceipt(repository, commit, digest, inspection) {
@@ -20,13 +20,13 @@ export function imageReceipt(repository, commit, digest, inspection) {
     || !inspection?.RepoDigests?.includes(`${repository}@${digest}`)) {
     throw new Error('Published image platform, revision, mode, or digest differs from the selected source');
   }
-  return { uri: `${repository}@${digest}`, sha256: digest.slice(7), commit };
+  return { sha256: digest.slice(7), commit };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const config = publicationConfig(process.env.AWS_CUSTOMER_PRODUCT_MCP_REPOSITORY, process.env.GITHUB_SHA);
   if (process.argv[2] === 'config') {
-    process.stdout.write(JSON.stringify(config) + '\n');
+    process.stdout.write(JSON.stringify({ commit: config.commit, tag: config.tag }) + '\n');
   } else if (process.argv.length === 5) {
     const inspection = JSON.parse(readFileSync(process.argv[3], 'utf8'));
     if (!Array.isArray(inspection) || inspection.length !== 1) throw new Error('One inspected image is required');
