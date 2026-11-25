@@ -11,8 +11,8 @@ function inspection() {
   } } };
 }
 
-test('receipt binds the exact immutable image, platform and customer source', () => {
-  assert.deepEqual(imageReceipt(repository, commit, digest, inspection()), { uri: `${repository}@${digest}`, sha256: 'b'.repeat(64), commit });
+test('receipt binds the exact immutable image and customer source without naming the registry', () => {
+  assert.deepEqual(imageReceipt(repository, commit, digest, inspection()), { sha256: 'b'.repeat(64), commit });
   assert.equal(publicationConfig(repository, commit).tag, `mcp-${commit}`);
 });
 for (const bad of ['latest', digest.toUpperCase(), 'sha256:' + 'b'.repeat(63)]) {
